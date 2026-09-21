@@ -1,0 +1,520 @@
+import { Router, Response } from 'express';
+import { GoogleGenAI, Type } from '@google/genai';
+import { getSupabase } from '../supabase';
+import { requireTenantAuth, optionalTenantAuth, AuthenticatedRequest } from '../middleware/auth';
+import { generateLeaseCode } from '../utils/codeGenerator';
+import { getMsg, getReqLang } from '../utils/i18n';
+import { RentiaDB } from '../db/database';
+
+export const leaseRouter = Router();
+
+// Lazy initialization of Gemini client
+let aiClient: GoogleGenAI | null = null;
+function getAi(): GoogleGenAI {
+  if (!aiClient) {
+    aiClient = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
+  }
+  return aiClient;
+}
+
+// 1. Extraire les informations d'un contrat via l'IA Gemini (Multi-Pages, Images & PDF)
+// Accessible avec ou sans session active (optionalTenantAuth)
+leaseRouter.post('/extract-contract', optionalTenantAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { imageBase64, mimeType, documentText, pages } = req.body;
+
+    const rawPages: Array<{ dataUrl: string; mimeType?: string; name?: string }> = Array.isArray(pages) && pages.length > 0
+      ? pages
+      : imageBase64
+      ? [{ dataUrl: imageBase64, mimeType: mimeType || 'image/jpeg', name: 'page-1.jpg' }]
+      : [];
+
+    if (rawPages.length === 0 && !documentText) {
+      const lang = getReqLang(req);
+      res.status(400).json({ error: getMsg('CONTRACT_EXTRACTION_MISSING_DATA', lang) });
+      return;
+    }
+
+    const prompt = `Tu es un expert juridique assermenté en analyse de contrats de bail locatif et d'états des lieux.
+Analyse le document fourni (multi-pages ou PDF) et extrait avec la plus haute fidélité les informations clés pour créer une location vérifiable :
+
+1. L'adresse complète exacte du logement loué (numéro, rue, appartement)
+2. La ville (city)
+3. Le code postal (postalCode)
+4. Le pays (country - ex: España, France, etc.)
+5. Le nom complet du bailleur / propriétaire ou agence (landlordName)
+6. Le contact du bailleur (email ou téléphone si présent)
+7. Le nom du locataire (tenantName)
+8. Le montant exact du loyer mensuel en nombre entier (rent)
+9. Le montant du dépôt de garantie / caution (deposit)
+10. La devise (currency, ex: €)
+11. La date de début de bail au format YYYY-MM ou YYYY-MM-DD (startDate)
+12. La date de fin de bail au format YYYY-MM ou YYYY-MM-DD, ou "Actual" si bail en cours (endDate)
+13. Le type de logement (propertyType : Studio, Appartement T2, Appartement T3, Maison, etc.)
+14. Les scores de confiance estimés (entre 0.0 et 1.0) pour l'adresse, le loyer, les dates et le bailleur.`;
+
+    let parts: any[] = [];
+
+    for (let i = 0; i < rawPages.length; i++) {
+      const page = rawPages[i];
+      if (page.dataUrl) {
+        const cleanBase64 = page.dataUrl.replace(/^data:[^;]+;base64,/, '');
+        let pageMime = page.mimeType;
+        if (!pageMime || pageMime === 'application/octet-stream') {
+          if (page.dataUrl.startsWith('data:application/pdf') || page.name?.toLowerCase().endsWith('.pdf') || cleanBase64.startsWith('JVBERi')) {
+            pageMime = 'application/pdf';
+          } else if (page.dataUrl.startsWith('data:image/png') || page.name?.toLowerCase().endsWith('.png')) {
+            pageMime = 'image/png';
+          } else if (page.dataUrl.startsWith('data:image/webp') || page.name?.toLowerCase().endsWith('.webp')) {
+            pageMime = 'image/webp';
+          } else {
+            pageMime = 'image/jpeg';
+          }
+        }
+        parts.push({
+          inlineData: {
+            mimeType: pageMime,
+            data: cleanBase64,
+          },
+        });
+      }
+    }
+
+    if (documentText) {
+      parts.push({ text: `Document text:\n${documentText}` });
+    }
+
+    parts.push({ text: prompt });
+
+    const ai = getAi();
+    const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+    let response: any = null;
+    let lastError: any = null;
+
+    const schemaConfig = {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          address: { type: Type.STRING, description: "Adresse complète du logement loué" },
+          city: { type: Type.STRING, description: "Ville" },
+          postalCode: { type: Type.STRING, description: "Code postal" },
+          country: { type: Type.STRING, description: "Pays" },
+          landlordName: { type: Type.STRING, description: "Nom complet du bailleur ou de l'agence" },
+          landlordContact: { type: Type.STRING, description: "Email ou téléphone du propriétaire si trouvé" },
+          tenantName: { type: Type.STRING, description: "Nom du locataire" },
+          rent: { type: Type.INTEGER, description: "Montant du loyer mensuel" },
+          deposit: { type: Type.INTEGER, description: "Montant du dépôt de garantie" },
+          currency: { type: Type.STRING, description: "Symbole de devise" },
+          startDate: { type: Type.STRING, description: "Date de début (YYYY-MM)" },
+          endDate: { type: Type.STRING, description: "Date de fin (YYYY-MM ou Actual)" },
+          propertyType: { type: Type.STRING, description: "Type de bien" },
+          confidence: {
+            type: Type.OBJECT,
+            properties: {
+              address: { type: Type.NUMBER },
+              rent: { type: Type.NUMBER },
+              dates: { type: Type.NUMBER },
+              landlord: { type: Type.NUMBER },
+              overall: { type: Type.NUMBER },
+            },
+          },
+        },
+        required: ["address", "landlordName", "startDate", "rent"],
+      },
+    };
+
+    for (const modelName of candidateModels) {
+      try {
+        response = await ai.models.generateContent({
+          model: modelName,
+          contents: parts,
+          config: schemaConfig,
+        });
+        if (response?.text) {
+          break;
+        }
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`[Gemini Extraction] Model ${modelName} failed, trying next candidate:`, err.message);
+      }
+    }
+
+    if (!response || !response.text) {
+      throw lastError || new Error("Impossible d'obtenir une réponse de l'IA Gemini.");
+    }
+
+    const parsed = JSON.parse(response.text || '{}');
+    const cleanStr = (val: any) => (!val || val === 'null' || val === 'undefined' || val === 'N/A' ? '' : String(val).trim());
+
+    res.json({
+      extracted: {
+        address: cleanStr(parsed.address),
+        city: cleanStr(parsed.city),
+        postalCode: cleanStr(parsed.postalCode),
+        country: cleanStr(parsed.country) || 'España',
+        landlordName: cleanStr(parsed.landlordName),
+        landlordContact: cleanStr(parsed.landlordContact),
+        tenantName: cleanStr(parsed.tenantName) || req.tenant?.name || '',
+        rent: Number(parsed.rent) || 0,
+        deposit: Number(parsed.deposit) || 0,
+        currency: cleanStr(parsed.currency) || '€',
+        startDate: cleanStr(parsed.startDate),
+        endDate: cleanStr(parsed.endDate) || 'Actual',
+        propertyType: cleanStr(parsed.propertyType) || 'Appartement',
+        confidence: parsed.confidence || {
+          address: 0.9,
+          rent: 0.9,
+          dates: 0.85,
+          landlord: 0.85,
+          overall: 0.88,
+        },
+        pagesCount: rawPages.length || 1,
+      },
+    });
+  } catch (err: any) {
+    console.error('Error in lease contract extraction with Gemini:', err);
+    res.status(500).json({
+      error: err?.message || 'Ocurrió un error durante el análisis del documento. Por favor verifique la legibilidad del archivo o ingrese los datos manualmente.'
+    });
+  }
+});
+
+// Require authenticated tenant on all modifications & persistent lease endpoints
+leaseRouter.use(requireTenantAuth);
+
+// 2. Voir ses propres locations depuis Supabase (table leases)
+leaseRouter.get('/', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const tenantId = req.tenant!.id;
+    const supabase = getSupabase();
+
+    // 1. Obtener contratos reales de la base de datos persistente
+    const localLeases = RentiaDB.getLeases({ userId: tenantId });
+
+    // 2. Si Supabase tiene datos, combinar
+    let finalLeases = localLeases.map((l: any) => ({
+      id: l.id,
+      code: l.code,
+      address: l.address,
+      city: l.city,
+      postalCode: l.postal_code,
+      country: l.country,
+      currency: l.currency || '€',
+      propertyType: l.property_type || 'Appartement',
+      rent: Number(l.rent) || 0,
+      deposit: Number(l.deposit) || 0,
+      startDate: l.start_date,
+      endDate: l.end_date,
+      ownerNameGuess: l.owner_name_guess,
+      ownerContact: l.owner_contact,
+      status: l.status,
+      confidenceScore: 0.96,
+      contractPagesCount: 1,
+      createdAt: l.created_at,
+      verification: null,
+    }));
+
+    try {
+      const { data: leases, error } = await supabase
+        .from('leases')
+        .select(`
+          id,
+          tenant_id,
+          landlord_name,
+          address,
+          monthly_rent,
+          start_date,
+          end_date,
+          status,
+          is_locked,
+          created_at
+        `)
+        .eq('tenant_id', tenantId)
+        .order('created_at', { ascending: false });
+
+      if (!error && leases && leases.length > 0) {
+        const sbFormatted = leases.map(l => {
+          return {
+            id: l.id,
+            code: `RENTIA-${l.id.substring(0, 6).toUpperCase()}`,
+            address: l.address,
+            city: 'Málaga',
+            postalCode: '',
+            country: 'España',
+            currency: '€',
+            propertyType: 'Appartement',
+            rent: Number(l.monthly_rent) || 0,
+            deposit: (Number(l.monthly_rent) || 0) * 2,
+            startDate: l.start_date,
+            endDate: l.end_date || 'Actual',
+            ownerNameGuess: l.landlord_name,
+            ownerContact: '',
+            status: l.status,
+            confidenceScore: 0.96,
+            contractPagesCount: 1,
+            createdAt: l.created_at,
+            verification: null,
+          };
+        });
+
+        const map = new Map();
+        finalLeases.forEach(fl => map.set(fl.id, fl));
+        sbFormatted.forEach(sbf => map.set(sbf.id, sbf));
+        finalLeases = Array.from(map.values());
+      }
+    } catch {
+      // Usar finalLeases de RentiaDB
+    }
+
+    res.json({ leases: finalLeases });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Error al obtener los contratos de arrendamiento.' });
+  }
+});
+
+// 3. Créer une nouvelle location dans la base de données réelle (RentiaDB + Supabase)
+leaseRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const tenantId = req.tenant!.id;
+    const {
+      address,
+      city,
+      postal_code,
+      country,
+      owner_name_guess,
+      owner_contact,
+      start_date,
+      end_date,
+      rent,
+      deposit,
+      property_type,
+      pages,
+      confidence_score,
+      tenant_photo_url,
+      tenant_contact_phone,
+      tenant_contact_email,
+      location_details,
+    } = req.body;
+
+    if (!address || !owner_name_guess || !start_date || !rent) {
+      res.status(400).json({ error: 'Veuillez renseigner l’adresse, le propriétaire, la date de début et le loyer.' });
+      return;
+    }
+
+    const code = generateLeaseCode();
+    const rawPages = Array.isArray(pages) ? pages : [];
+
+    // 1. Guardar de forma garantizada y atómica en la base de datos persistente
+    const savedInDb = RentiaDB.saveLease({
+      user_id: tenantId,
+      code,
+      address: String(address).trim(),
+      city: city ? String(city).trim() : 'Málaga',
+      postal_code: postal_code ? String(postal_code).trim() : null,
+      country: country ? String(country).trim() : 'España',
+      currency: '€',
+      property_type: property_type ? String(property_type).trim() : 'Appartement',
+      rent: Number(rent) || 0,
+      deposit: Number(deposit) || 0,
+      start_date: String(start_date).trim(),
+      end_date: end_date ? String(end_date).trim() : 'Actual',
+      owner_name_guess: String(owner_name_guess).trim(),
+      owner_contact: owner_contact ? String(owner_contact).trim() : null,
+      status: 'pending',
+      tenant_photo_url: tenant_photo_url || null,
+      tenant_contact_phone: tenant_contact_phone || null,
+      tenant_contact_email: tenant_contact_email || null,
+      location_details: location_details || null,
+    });
+
+    const supabase = getSupabase(req.supabaseToken);
+
+    // 2. Intentar replicar en Supabase en segundo plano si está disponible
+    let leaseId = savedInDb.id;
+    let createdLease: any = savedInDb;
+    try {
+      const { data: sbLease } = await supabase
+        .from('leases')
+        .insert({
+          id: savedInDb.id,
+          tenant_id: tenantId,
+          landlord_name: String(owner_name_guess || 'Propietario').trim(),
+          address: String(address).trim() + (city ? `, ${String(city).trim()}` : ''),
+          monthly_rent: Number(rent) || 0,
+          start_date: String(start_date).trim().split('T')[0],
+          end_date: end_date && end_date !== 'Actual' ? String(end_date).trim().split('T')[0] : null,
+          status: 'pending',
+          is_locked: false,
+        })
+        .select()
+        .maybeSingle();
+
+      if (sbLease?.id) {
+        createdLease = sbLease;
+        leaseId = sbLease.id;
+      }
+    } catch (sbErr) {
+      console.warn('Supabase lease sync warning:', sbErr);
+    }
+
+    // 2. Upload contract files to Supabase Storage (bucket "contracts") & save in contracts table
+    if (rawPages.length > 0) {
+      for (let i = 0; i < rawPages.length; i++) {
+        try {
+          const page = rawPages[i];
+          const dataUrl = page.dataUrl || '';
+          if (dataUrl.includes('base64,')) {
+            const parts = dataUrl.split(';base64,');
+            const mimeType = parts[0].replace('data:', '') || 'image/jpeg';
+            const base64Data = parts[1];
+            const buffer = Buffer.from(base64Data, 'base64');
+            const ext = mimeType.includes('pdf') ? 'pdf' : 'jpg';
+            const storagePath = `${tenantId}/${code}/contract_page_${i + 1}.${ext}`;
+
+            // Upload to Supabase Storage "contracts" bucket
+            const { error: uploadErr } = await supabase.storage
+              .from('contracts')
+              .upload(storagePath, buffer, {
+                contentType: mimeType,
+                upsert: true,
+              });
+
+            if (!uploadErr) {
+              await supabase.from('contracts').insert({
+                user_id: tenantId,
+                lease_id: leaseId,
+                file_path: storagePath,
+                file_name: page.name || `page-${i + 1}.${ext}`,
+                file_size_bytes: buffer.length,
+                mime_type: mimeType,
+                page_count: 1,
+                status: 'uploaded',
+              });
+            }
+          }
+        } catch (storageErr) {
+          console.warn('Storage upload error for page:', storageErr);
+        }
+      }
+    }
+
+    // 3. Record lease creation event with 0 points (no points granted on simple unverified declaration)
+    let currentTrustScore = 50;
+    try {
+      const { data: currentProfile } = await supabase
+        .from('profiles')
+        .select('trust_score')
+        .eq('id', tenantId)
+        .maybeSingle();
+      if (currentProfile && typeof currentProfile.trust_score === 'number') {
+        currentTrustScore = currentProfile.trust_score;
+      }
+    } catch {
+      // Fallback to default
+    }
+
+    // A simple self-declaration without third-party verification grants 0 points
+    const scoreDelta = 0;
+    const newTrustScore = currentTrustScore;
+
+    // Record in reputation_events with score_delta: 0 and resulting_score: currentTrustScore
+    try {
+      await supabase.from('reputation_events').insert({
+        user_id: tenantId,
+        lease_id: leaseId,
+        event_type: 'lease_created',
+        score_delta: scoreDelta,
+        resulting_score: newTrustScore,
+        details: {
+          code,
+          address: createdLease.address,
+          description: `Déclaration du bail ${code} (${createdLease.address}) — En attente de certification tiers (0 pt)`,
+        },
+      });
+    } catch (errRep) {
+      console.warn('Reputation event insert warning:', errRep);
+    }
+
+    const lang = getReqLang(req);
+    res.status(201).json({
+      message: getMsg('LEASE_CREATED', lang),
+      lease: {
+        id: createdLease.id,
+        code: createdLease.code,
+        address: createdLease.address,
+        city: createdLease.city,
+        postalCode: createdLease.postal_code,
+        country: createdLease.country,
+        currency: createdLease.currency || '€',
+        propertyType: createdLease.property_type || 'Appartement',
+        rent: createdLease.rent,
+        deposit: createdLease.deposit,
+        startDate: createdLease.start_date,
+        endDate: createdLease.end_date,
+        ownerNameGuess: createdLease.owner_name_guess,
+        ownerContact: createdLease.owner_contact,
+        status: createdLease.status,
+        confidenceScore: Number(confidence_score) || 0.96,
+        contractPagesCount: rawPages.length || 1,
+        createdAt: createdLease.created_at,
+      },
+    });
+  } catch (err: any) {
+    const lang = getReqLang(req);
+    res.status(500).json({ error: err.message || getMsg('LEASE_CREATE_ERROR', lang) });
+  }
+});
+
+// 4. Supprimer une location non-vérifiée (bloquée par trigger si status = 'verified')
+leaseRouter.delete('/:id', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const tenantId = req.tenant!.id;
+    const { id } = req.params;
+    const lang = getReqLang(req);
+    const supabase = getSupabase();
+
+    // Check lease
+    const { data: lease, error: fetchErr } = await supabase
+      .from('leases')
+      .select('id, status')
+      .eq('id', id)
+      .eq('user_id', tenantId)
+      .maybeSingle();
+
+    if (!lease) {
+      res.status(404).json({ error: getMsg('LEASE_NOT_FOUND', lang) });
+      return;
+    }
+
+    if (lease.status === 'verified') {
+      res.status(400).json({
+        error: getMsg('LEASE_VERIFIED_LOCK', lang),
+      });
+      return;
+    }
+
+    const { error: deleteErr } = await supabase
+      .from('leases')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', tenantId);
+
+    if (deleteErr) {
+      res.status(400).json({ error: deleteErr.message });
+      return;
+    }
+
+    res.json({ message: getMsg('LEASE_DELETED', lang) });
+  } catch (err: any) {
+    const lang = getReqLang(req);
+    res.status(500).json({ error: err.message || getMsg('LEASE_DELETE_ERROR', lang) });
+  }
+});
