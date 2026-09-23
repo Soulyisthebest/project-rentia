@@ -80,17 +80,17 @@ export async function calculateMatchRanking(
     const maxBudget = prefs?.max_budget || dbTenant?.max_budget || 1400;
     const hasPets = prefs?.has_pets !== undefined ? prefs.has_pets === true : (dbTenant?.has_pets ?? false);
 
-    // HARD FILTER 1: Animaux
+    // HARD FILTER 1: Mascotas
     if (listing && hasPets && listing.pets_allowed === false) {
       return {
         eligible: false,
         matchScore: 0,
-        reason: 'Animaux non acceptés pour ce logement',
+        reason: 'No se admiten mascotas en esta vivienda',
         breakdown: { compatibility: 0, verification: 0, activity: 0, pointsBonus: 0, totalRawPoints: 0 },
       };
     }
 
-    // HARD FILTER 2: Budget strict (+25% de dépassement max)
+    // HARD FILTER 2: Presupuesto estricto (+25% de exceso máx.)
     if (listing && listing.rent > maxBudget * 1.25) {
       return {
         eligible: false,

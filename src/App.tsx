@@ -787,16 +787,20 @@ export default function App() {
             <ShieldCheck className="w-3 h-3" />
             <span>{t.privacyCenterBtn}</span>
           </button>
-          <span>•</span>
-          <button
-            type="button"
-            onClick={() => setCurrentView('admin_panel')}
-            className="text-amber-700/90 hover:text-amber-900 font-semibold hover:underline inline-flex items-center gap-1"
-            id="footer-admin-link"
-          >
-            <Lock className="w-3 h-3 text-amber-600" />
-            <span>Acceso Admin</span>
-          </button>
+          {currentUser?.role === 'admin' && (
+            <>
+              <span>•</span>
+              <button
+                type="button"
+                onClick={() => setCurrentView('admin_panel')}
+                className="text-amber-700/90 hover:text-amber-900 font-semibold hover:underline inline-flex items-center gap-1"
+                id="footer-admin-link"
+              >
+                <Lock className="w-3 h-3 text-amber-600" />
+                <span>Panel de administración</span>
+              </button>
+            </>
+          )}
           {!currentUser && (
             <>
               <span>•</span>

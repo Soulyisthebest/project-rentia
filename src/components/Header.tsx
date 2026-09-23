@@ -347,29 +347,18 @@ export const Header: React.FC<HeaderProps> = ({
                   </div>
 
                   {/* Panel Admin & Dashboards button - ONLY FOR ADMINS */}
-                  {currentUser.role === 'admin' ? (
+                  {/* Enlace "Panel de administración" visible ÚNICAMENTE junto a "Cerrar sesión" cuando role === 'admin'; inexistente en el DOM para cualquier otro usuario (Prioridad 6.1) */}
+                  {currentUser.role === 'admin' && (
                     <button
                       onClick={() => {
                         setShowUserMenu(false);
                         navigateView('admin_panel');
                       }}
-                      className="w-full text-left px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 flex items-center gap-2 transition-colors"
+                      className="w-full text-left px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 flex items-center gap-2 transition-colors border-b border-stone-100"
                       id="btn-admin-panel"
                     >
-                      <ShieldAlert className="w-3.5 h-3.5 text-indigo-600" />
-                      <span>Centro de Dashboards Admin</span>
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        setShowUserMenu(false);
-                        navigateView('admin_panel');
-                      }}
-                      className="w-full text-left px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-50 flex items-center gap-2 transition-colors"
-                      id="btn-admin-gate-shortcut"
-                    >
-                      <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
-                      <span>Acceso Administrador</span>
+                      <ShieldAlert className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                      <span>Panel de administración</span>
                     </button>
                   )}
 
@@ -406,16 +395,6 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           ) : (
             <div className="flex items-center gap-1.5">
-              <button
-                onClick={() => navigateView('admin_panel')}
-                className="hidden sm:flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-amber-300 bg-amber-50/80 text-amber-900 text-xs font-bold hover:bg-amber-100 transition-colors shadow-2xs"
-                id="btn-open-admin-gate"
-                title="Acceso restringido para administradores"
-              >
-                <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
-                <span>Admin</span>
-              </button>
-
               <button
                 onClick={onOpenAuthModal}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#1E1B4B] text-white text-xs font-bold hover:bg-[#28235C] transition-colors shadow-xs"

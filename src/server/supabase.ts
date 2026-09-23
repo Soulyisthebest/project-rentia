@@ -16,14 +16,13 @@ export const getSupabaseUrl = (): string => {
   const candidates = [
     process.env.SUPABASE_URL,
     process.env.VITE_SUPABASE_URL,
-    'https://akdwmpejybmplmmdwwwj.supabase.co',
   ];
   for (const candidate of candidates) {
     if (isValidHttpUrl(candidate) && !candidate?.includes('TU_PROYECTO')) {
       return candidate!.trim();
     }
   }
-  return 'https://akdwmpejybmplmmdwwwj.supabase.co';
+  return '';
 };
 
 export const getSupabaseAnonKey = (): string => {
@@ -32,7 +31,6 @@ export const getSupabaseAnonKey = (): string => {
     process.env.SUPABASE_PUBLISHABLE_KEY,
     process.env.VITE_SUPABASE_ANON_KEY,
     process.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-    'sb_publishable_J7cpWYILasYWTBFxFXptOw_WjAl9eoY',
   ];
   for (const c of candidates) {
     if (
@@ -46,7 +44,7 @@ export const getSupabaseAnonKey = (): string => {
       return c.trim();
     }
   }
-  return 'sb_publishable_J7cpWYILasYWTBFxFXptOw_WjAl9eoY';
+  return '';
 };
 
 export const getSupabaseSecretKey = (): string => {

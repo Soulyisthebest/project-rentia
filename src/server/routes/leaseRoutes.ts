@@ -42,23 +42,23 @@ leaseRouter.post('/extract-contract', optionalTenantAuth, async (req: Authentica
       return;
     }
 
-    const prompt = `Tu es un expert juridique assermenté en analyse de contrats de bail locatif et d'états des lieux.
-Analyse le document fourni (multi-pages ou PDF) et extrait avec la plus haute fidélité les informations clés pour créer une location vérifiable :
+    const prompt = `Eres un experto jurídico en análisis de contratos de arrendamiento y finanzas inmobiliarias en España.
+Analiza el documento aportado (imágenes o PDF) y extrae con la más alta fidelidad la información clave para crear un alquiler verificable:
 
-1. L'adresse complète exacte du logement loué (numéro, rue, appartement)
-2. La ville (city)
-3. Le code postal (postalCode)
-4. Le pays (country - ex: España, France, etc.)
-5. Le nom complet du bailleur / propriétaire ou agence (landlordName)
-6. Le contact du bailleur (email ou téléphone si présent)
-7. Le nom du locataire (tenantName)
-8. Le montant exact du loyer mensuel en nombre entier (rent)
-9. Le montant du dépôt de garantie / caution (deposit)
-10. La devise (currency, ex: €)
-11. La date de début de bail au format YYYY-MM ou YYYY-MM-DD (startDate)
-12. La date de fin de bail au format YYYY-MM ou YYYY-MM-DD, ou "Actual" si bail en cours (endDate)
-13. Le type de logement (propertyType : Studio, Appartement T2, Appartement T3, Maison, etc.)
-14. Les scores de confiance estimés (entre 0.0 et 1.0) pour l'adresse, le loyer, les dates et le bailleur.`;
+1. La dirección completa exacta de la vivienda alquilada (número, calle, piso)
+2. La ciudad (city)
+3. El código postal (postalCode)
+4. El país (country - ej: España, France, etc.)
+5. El nombre completo del arrendador / propietario o agencia (landlordName)
+6. El contacto del arrendador (email o teléfono si figura)
+7. El nombre del inquilino (tenantName)
+8. El importe exacto de la renta mensual en número entero (rent)
+9. El importe de la fianza / depósito de garantía (deposit)
+10. La moneda (currency, ej: €)
+11. La fecha de inicio del contrato en formato YYYY-MM o YYYY-MM-DD (startDate)
+12. La fecha de fin de contrato en formato YYYY-MM o YYYY-MM-DD, o "Actual" si sigue vigente (endDate)
+13. El tipo de vivienda (propertyType: Estudio, Piso, Apartamento, Casa, etc.)
+14. Las puntuaciones de confianza estimadas (entre 0.0 y 1.0) para la dirección, renta, fechas y arrendador.`;
 
     let parts: any[] = [];
 
@@ -103,16 +103,16 @@ Analyse le document fourni (multi-pages ou PDF) et extrait avec la plus haute fi
       responseSchema: {
         type: Type.OBJECT,
         properties: {
-          address: { type: Type.STRING, description: "Adresse complète du logement loué" },
-          city: { type: Type.STRING, description: "Ville" },
-          postalCode: { type: Type.STRING, description: "Code postal" },
-          country: { type: Type.STRING, description: "Pays" },
-          landlordName: { type: Type.STRING, description: "Nom complet du bailleur ou de l'agence" },
-          landlordContact: { type: Type.STRING, description: "Email ou téléphone du propriétaire si trouvé" },
-          tenantName: { type: Type.STRING, description: "Nom du locataire" },
-          rent: { type: Type.INTEGER, description: "Montant du loyer mensuel" },
-          deposit: { type: Type.INTEGER, description: "Montant du dépôt de garantie" },
-          currency: { type: Type.STRING, description: "Symbole de devise" },
+          address: { type: Type.STRING, description: "Dirección completa de la vivienda alquilada" },
+          city: { type: Type.STRING, description: "Ciudad" },
+          postalCode: { type: Type.STRING, description: "Código postal" },
+          country: { type: Type.STRING, description: "País" },
+          landlordName: { type: Type.STRING, description: "Nombre completo del arrendador o agencia" },
+          landlordContact: { type: Type.STRING, description: "Email o teléfono del arrendador si consta" },
+          tenantName: { type: Type.STRING, description: "Nombre del arrendatario / inquilino" },
+          rent: { type: Type.INTEGER, description: "Importe de la renta mensual" },
+          deposit: { type: Type.INTEGER, description: "Importe del depósito de fianza" },
+          currency: { type: Type.STRING, description: "Moneda" },
           startDate: { type: Type.STRING, description: "Date de début (YYYY-MM)" },
           endDate: { type: Type.STRING, description: "Date de fin (YYYY-MM ou Actual)" },
           propertyType: { type: Type.STRING, description: "Type de bien" },
@@ -305,7 +305,7 @@ leaseRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
     } = req.body;
 
     if (!address || !owner_name_guess || !start_date || !rent) {
-      res.status(400).json({ error: 'Veuillez renseigner l’adresse, le propriétaire, la date de début et le loyer.' });
+      res.status(400).json({ error: 'Por favor, indica la dirección, el arrendador, la fecha de inicio y la renta mensual.' });
       return;
     }
 

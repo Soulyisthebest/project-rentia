@@ -29,7 +29,7 @@ function getAuthMsg(
   return messages.es;
 }
 
-// 0. Demande de code OTP SMS pour validation de téléphone (Priorité 1-BIS.2)
+// 0. Solicitud de código OTP SMS para validación de teléfono (Prioridad 1-BIS.2)
 authRouter.post('/request-phone-otp', async (req: Request, res: Response) => {
   try {
     const { phone, lang = 'es' } = req.body;
@@ -88,21 +88,9 @@ authRouter.post('/verify-phone-otp', async (req: Request, res: Response) => {
 
     const record = phoneOtpStore.get(cleanPhone);
 
-    // Código válido o código de demostración oficial
-    if (
-      (record && record.otp === cleanOtp && record.expiresAt > Date.now()) ||
-      cleanOtp === '482910' ||
-      cleanOtp === '123456'
-    ) {
-      if (record) {
-        record.verified = true;
-      } else {
-        phoneOtpStore.set(cleanPhone, {
-          otp: cleanOtp,
-          expiresAt: Date.now() + 30 * 60 * 1000,
-          verified: true,
-        });
-      }
+    // Validación estricta sin códigos maestros de bypass (Prioridad 8.0 / 1-BIS.2)
+    if (record && record.otp === cleanOtp && record.expiresAt > Date.now()) {
+      record.verified = true;
 
       res.json({
         success: true,
@@ -161,9 +149,9 @@ authRouter.post('/register', loginRateLimiter, async (req: Request, res: Respons
 
     const normalizedPhone = cleanPhone.replace(/[\s\-\(\)\.]/g, '');
 
-    // Verificación de validación del OTP telefónico (Prioridad 1-BIS.2)
+    // Verificación estricta de validación del OTP telefónico (Prioridad 8.0 / 1-BIS.2)
     const otpRecord = phoneOtpStore.get(normalizedPhone) || phoneOtpStore.get(cleanPhone);
-    const isDirectOtpValid = otp && (otp === '482910' || otp === '123456' || otpRecord?.otp === otp);
+    const isDirectOtpValid = Boolean(otp && otpRecord && otpRecord.otp === String(otp).trim() && otpRecord.expiresAt > Date.now());
     const isPhoneVerified = Boolean(otpRecord?.verified || isDirectOtpValid);
 
     if (!isPhoneVerified) {
@@ -984,7 +972,7 @@ authRouter.post('/login', loginRateLimiter, async (req: Request, res: Response) 
   }
 });
 
-// 3. Déconnexion (Logout)
+// 3. Cierre de sesión (Logout)
 authRouter.post('/logout', async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.body;

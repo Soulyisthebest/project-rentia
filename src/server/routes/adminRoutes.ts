@@ -8,12 +8,14 @@ import { getAllLocalUsers } from '../localAuthStore';
 
 export const adminRouter = Router();
 
+// Todas las rutas de administración de datos, moderación y métricas requieren sesión Admin estricta (Prioridad 8.1 / 6.1)
+adminRouter.use(requireAdminAuth);
+
 /**
  * GET /api/admin/supabase/status
  * Diagnóstico exhaustivo y comprobación de tablas en Supabase PostgreSQL.
- * Accesible con optionalTenantAuth para verificar conectividad y tablas sin bloquear por sesión caducada.
  */
-adminRouter.get('/supabase/status', optionalTenantAuth, async (req: AuthenticatedRequest, res: Response) => {
+adminRouter.get('/supabase/status', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const configured = isSupabaseConfigured();
     const url = getSupabaseUrl();
@@ -109,7 +111,7 @@ adminRouter.get('/supabase/status', optionalTenantAuth, async (req: Authenticate
  * GET /api/admin/stats
  * Resumen global para el panel de administración con conteos de base de datos
  */
-adminRouter.get('/stats', optionalTenantAuth, async (req: AuthenticatedRequest, res: Response) => {
+adminRouter.get('/stats', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     // 1. Estadísticas exactas calculadas de la base de datos persistente real
     const dbStats = RentiaDB.getExactDatabaseStats();
@@ -159,7 +161,7 @@ adminRouter.get('/stats', optionalTenantAuth, async (req: AuthenticatedRequest, 
  * GET /api/admin/sessions/summary
  * Métricas analíticas globales de logins y permanencia en la app
  */
-adminRouter.get('/sessions/summary', optionalTenantAuth, async (req: AuthenticatedRequest, res: Response) => {
+adminRouter.get('/sessions/summary', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { RentiaDB } = await import('../db/database');
     const summary = RentiaDB.getGlobalAnalytics();
@@ -168,9 +170,6 @@ adminRouter.get('/sessions/summary', optionalTenantAuth, async (req: Authenticat
     res.status(500).json({ error: err.message || 'Error al obtener resumen de sesiones.' });
   }
 });
-
-// Todas las rutas de administración de datos, moderación y mutaciones requieren sesión Admin estricta
-adminRouter.use(requireAdminAuth);
 
 /**
  * GET /api/admin/ownership-verifications

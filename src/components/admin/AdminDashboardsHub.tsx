@@ -534,7 +534,16 @@ export const AdminDashboardsHub: React.FC<AdminDashboardsHubProps> = ({
                   <span className="text-[11px] text-slate-400">Supabase Cloud</span>
                   <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300">Conectado</span>
                 </div>
-                <p className="text-[10px] text-slate-400 font-mono truncate">pczmwhlupfepdskvjtxc.supabase.co</p>
+                <p className="text-[10px] text-slate-400 font-mono truncate">
+                  {(() => {
+                    try {
+                      const url = import.meta.env.VITE_SUPABASE_URL;
+                      return url ? new URL(url).hostname : 'supabase.co (desde .env)';
+                    } catch {
+                      return 'supabase.co (desde .env)';
+                    }
+                  })()}
+                </p>
               </div>
 
               <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-700 flex items-center justify-between">

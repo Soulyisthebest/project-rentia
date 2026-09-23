@@ -461,7 +461,7 @@ tenantRouter.delete('/me', async (req: AuthenticatedRequest, res: Response) => {
       console.warn('Profile anonymization warning:', profileAnonErr);
     }
 
-    // 5. Si propriétaire, supprimer également les annonces publiées
+    // 5. Si es propietario, eliminar también los inmuebles publicados
     try {
       await supabase.from('listings').delete().eq('landlord_id', tenantId);
     } catch {
@@ -536,7 +536,7 @@ tenantRouter.put('/deactivate', async (req: AuthenticatedRequest, res: Response)
       // Non-blocking
     }
 
-    // 3. Si propriétaire, désactiver temporairement ses annonces du marché
+    // 3. Si es propietario, desactivar temporalmente sus anuncios del marketplace
     try {
       await supabase
         .from('listings')

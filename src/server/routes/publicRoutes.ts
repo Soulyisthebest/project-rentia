@@ -130,7 +130,7 @@ publicRouter.post('/leases/:code/confirm', async (req: Request, res: Response) =
     const otpRecord = otpStore.get(`${cleanCode}_${cleanPhone}`);
     if (otpRecord && !otpRecord.verified) {
       res.status(400).json({
-        error: 'Veuillez valider le code SMS reçu sur votre téléphone avant de certifier.',
+        error: 'Por favor, valida el código SMS recibido en tu teléfono antes de certificar.',
       });
       return;
     }
@@ -153,7 +153,8 @@ publicRouter.post('/leases/:code/confirm', async (req: Request, res: Response) =
 
             if (existingLease && existingLease.user_id === userData.user.id) {
               res.status(403).json({ 
-                error: 'Sécurité anti-fraude : Vous ne pouvez pas valider votre propre location. Cette action est réservée au propriétaire.' 
+                error: 'Seguridad anti-fraude: No puedes validar tu propio alquiler. Esta acción está reservada al arrendador.',
+                code: 'OWN_LEASE_VALIDATION_FORBIDDEN'
               });
               return;
             }
@@ -166,19 +167,19 @@ publicRouter.post('/leases/:code/confirm', async (req: Request, res: Response) =
 
     // Validate inputs
     if (!['yes', 'no'].includes(tenancy_confirmed)) {
-      res.status(400).json({ error: 'Veuillez confirmer si la location a bien eu lieu (yes/no).' });
+      res.status(400).json({ error: 'Por favor, confirma si el alquiler tuvo lugar (yes/no).' });
       return;
     }
     if (!['yes', 'sometimes', 'no'].includes(rent_paid_ok)) {
-      res.status(400).json({ error: 'Veuillez indiquer la ponctualité des loyers (yes/sometimes/no).' });
+      res.status(400).json({ error: 'Por favor, indica la puntualidad de los pagos (yes/sometimes/no).' });
       return;
     }
     if (!['yes', 'no'].includes(property_maintained)) {
-      res.status(400).json({ error: 'Veuillez indiquer si le logement a été bien entretenu (yes/no).' });
+      res.status(400).json({ error: 'Por favor, indica si el inmueble fue bien cuidado (yes/no).' });
       return;
     }
     if (!['yes', 'no'].includes(would_recommend)) {
-      res.status(400).json({ error: 'Veuillez indiquer si vous recommandez ce locataire (yes/no).' });
+      res.status(400).json({ error: 'Por favor, indica si recomiendas a este inquilino (yes/no).' });
       return;
     }
 

@@ -97,10 +97,10 @@ export function calculateHaversineDistanceKm(lat1: number, lon1: number, lat2: n
 
 /**
  * GET /api/matching/listings
- * Renvoie les logements actifs avec récupération automatique du propriétaire depuis profiles.
- * RÈGLE STRICTE :
- * - Filtrage des annonces de test (is_test) par défaut : les annonces de test ne sont jamais confondues avec des vraies
- * - Restriction aux 8 villes d'Andalousie autorisées
+ * Devuelve las viviendas activas con recuperación automática del propietario desde profiles.
+ * REGLA ESTRICTA:
+ * - Filtrado de anuncios de prueba (is_test) por defecto: nunca se confunden con anuncios reales
+ * - Restricción a las 8 ciudades autorizadas de Andalucía
  */
 matchingRouter.get('/listings', async (req: Request, res: Response) => {
   try {
@@ -659,11 +659,11 @@ matchingRouter.post('/listings', requireTenantAuth, async (req: AuthenticatedReq
 
 /**
  * GET /api/matching/candidates
- * Filtre STRICT & ÉQUITABLE :
- * - Aucune condition bloquante en base empêchant les profils vérifiés sans antécédent locatif d'être lus.
- * - Le filtrage logique retient tout locataire ayant au moins 1 location certifiée OU ayant complété la vérification de son profil / score de réputation (score >= 50 ou identité certifiée).
- * - Les comptes vides (brouillons sans vérification) sont éliminés.
- * - Respect strict de la confidentialité (prénom seul, tranche d'âge large, budget max, zéro donnée intime avant match).
+ * Filtro ESTRICTO & EQUITATIVO:
+ * - Sin condiciones bloqueantes que impidan leer perfiles verificados.
+ * - El filtrado lógico retiene a cualquier inquilino con al menos 1 alquiler verificado O que haya completado la verificación de su perfil / reputación (score >= 50 o identidad verificada).
+ * - Las cuentas vacías (borradores sin verificar) se excluyen.
+ * - Respeto estricto de la privacidad (nombre de pila, rango de edad, presupuesto máximo, sin datos sensibles antes de match).
  */
 matchingRouter.get('/candidates', async (req: Request, res: Response) => {
   try {
@@ -841,7 +841,7 @@ matchingRouter.post('/swipe', async (req: Request, res: Response) => {
       console.warn('Note insertion swipe:', swipeError?.message);
     }
 
-    // 2. Si le swipe courant est un "pass", aucun match
+    // 2. Si la acción actual es "pass", no hay match ni apertura de chat
     if (action !== 'like') {
       res.json({
         success: true,
@@ -1547,7 +1547,7 @@ matchingRouter.post('/points/record', async (req: Request, res: Response) => {
 
 /**
  * GET /api/matching/matches
- * Renvoie STRICTEMENT les matchs de l'utilisateur authentifié (sécurité RLS + auth backend)
+ * Devuelve ESTRICTAMENTE los matches del usuario autenticado (seguridad RLS + auth backend)
  */
 matchingRouter.get('/matches', async (req: Request, res: Response) => {
   try {
