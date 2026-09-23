@@ -267,28 +267,22 @@ moderationRouter.put('/tenant/profile/financial', optionalTenantAuth, async (req
       return;
     }
 
-    const {
-      monthly_income,
-      employment_type,
-      has_guarantor,
-      guarantor_income,
-      has_pets,
-      pet_details,
-      max_budget,
-      target_city,
-      bio,
-    } = req.body;
+    const payload = req.body;
+    if (payload.photos && Array.isArray(payload.photos) && payload.photos.length > 0 && payload.photos.length < 3) {
+      res.status(400).json({ error: `Es obligatorio subir un mínimo de 3 fotografías del inquilino (has aportado ${payload.photos.length}).` });
+      return;
+    }
 
     const updated = RentiaDB.updateTenantFinancialProfile(userIdOrEmail, {
-      monthly_income: monthly_income !== undefined ? Number(monthly_income) : undefined,
-      employment_type,
-      has_guarantor: has_guarantor !== undefined ? Boolean(has_guarantor) : undefined,
-      guarantor_income: guarantor_income !== undefined ? Number(guarantor_income) : undefined,
-      has_pets: has_pets !== undefined ? Boolean(has_pets) : undefined,
-      pet_details,
-      max_budget: max_budget !== undefined ? Number(max_budget) : undefined,
-      target_city,
-      bio,
+      ...payload,
+      monthly_income: payload.monthly_income !== undefined ? Number(payload.monthly_income) : undefined,
+      max_budget: payload.max_budget !== undefined ? Number(payload.max_budget) : undefined,
+      min_budget: payload.min_budget !== undefined ? Number(payload.min_budget) : undefined,
+      stretch_budget: payload.stretch_budget !== undefined ? Number(payload.stretch_budget) : undefined,
+      guarantor_income: payload.guarantor_income !== undefined ? Number(payload.guarantor_income) : undefined,
+      has_guarantor: payload.has_guarantor !== undefined ? Boolean(payload.has_guarantor) : undefined,
+      has_pets: payload.has_pets !== undefined ? Boolean(payload.has_pets) : undefined,
+      has_minors: payload.has_minors !== undefined ? Boolean(payload.has_minors) : undefined,
     });
 
     res.json({

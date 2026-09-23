@@ -134,6 +134,33 @@ export interface TenantProfileRecord {
   selfie_url?: string;
   avatar_url?: string;
   photos?: string[];
+  household_type?: string;
+  has_minors?: boolean;
+  pet_type?: string;
+  pets_count?: number;
+  property_types?: string[];
+  search_purpose?: string;
+  desired_rooms?: string;
+  desired_bathrooms?: string;
+  min_budget?: number;
+  stretch_budget?: number;
+  utilities_included?: { community?: boolean; water?: boolean; electricity?: boolean; internet?: boolean };
+  target_neighborhoods?: string[];
+  search_radius_km?: number;
+  max_commute_minutes?: number;
+  transport_mode?: string;
+  essential_amenities?: string[];
+  amenity_priorities?: Record<string, string>;
+  smoking?: string;
+  remote_work?: string;
+  lifestyle_vibe?: string;
+  wants_roommates?: string;
+  room_preferences?: any;
+  income_range?: string;
+  can_provide_docs?: string;
+  move_in_date?: string;
+  rental_duration?: string;
+  onboarding_completed?: boolean;
   created_at: string;
   updated_at?: string;
 }
@@ -2365,17 +2392,7 @@ export const RentiaDB = {
   // ==========================================
   updateTenantFinancialProfile(
     userIdOrEmail: string,
-    updates: {
-      monthly_income?: number;
-      employment_type?: string;
-      has_guarantor?: boolean;
-      guarantor_income?: number;
-      has_pets?: boolean;
-      pet_details?: string;
-      max_budget?: number;
-      target_city?: string;
-      bio?: string;
-    }
+    updates: Partial<TenantProfileRecord>
   ): TenantProfileRecord | null {
     let tProfile = databaseCache.tenant_profiles.find(
       (p) => p.user_id === userIdOrEmail || p.email === userIdOrEmail
@@ -2393,14 +2410,14 @@ export const RentiaDB = {
           name: user.name,
           monthly_income: updates.monthly_income || 1800,
           employment_type: updates.employment_type || 'indefinido',
-          current_city: 'Málaga',
+          current_city: updates.target_city || 'Málaga',
           max_budget: updates.max_budget || 900,
           has_guarantor: updates.has_guarantor ?? false,
           guarantor_income: updates.guarantor_income,
           pets: updates.has_pets ?? false,
           has_pets: updates.has_pets ?? false,
           pet_details: updates.pet_details,
-          smokers: false,
+          smokers: updates.smoking === 'yes',
           trust_score: 80,
           is_verified: user.is_verified,
           verification_status: user.verification_status || 'unverified',
@@ -2412,18 +2429,16 @@ export const RentiaDB = {
       }
     }
 
-    if (updates.monthly_income !== undefined) tProfile.monthly_income = updates.monthly_income;
-    if (updates.employment_type !== undefined) tProfile.employment_type = updates.employment_type;
-    if (updates.has_guarantor !== undefined) tProfile.has_guarantor = updates.has_guarantor;
-    if (updates.guarantor_income !== undefined) tProfile.guarantor_income = updates.guarantor_income;
+    Object.assign(tProfile, updates);
     if (updates.has_pets !== undefined) {
-      tProfile.has_pets = updates.has_pets;
       tProfile.pets = updates.has_pets;
     }
-    if (updates.pet_details !== undefined) tProfile.pet_details = updates.pet_details;
-    if (updates.max_budget !== undefined) tProfile.max_budget = updates.max_budget;
-    if (updates.target_city !== undefined) tProfile.target_city = updates.target_city;
-    if (updates.bio !== undefined) tProfile.bio = updates.bio;
+    if (updates.photos && Array.isArray(updates.photos) && updates.photos.length > 0) {
+      tProfile.photos = updates.photos;
+      if (!tProfile.avatar_url && updates.photos[0]) {
+        tProfile.avatar_url = updates.photos[0];
+      }
+    }
 
     tProfile.updated_at = new Date().toISOString();
     saveDatabase();

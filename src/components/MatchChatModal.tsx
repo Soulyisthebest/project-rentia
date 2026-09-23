@@ -106,7 +106,7 @@ export const MatchChatModal: React.FC<MatchChatModalProps> = ({
   useEffect(() => {
     fetchMessages(true);
 
-    // 1. Canal Realtime Supabase (Prioridad P1.7)
+    // 1. Canal Realtime Supabase
     let channel: any = null;
     try {
       channel = supabase
@@ -123,7 +123,9 @@ export const MatchChatModal: React.FC<MatchChatModalProps> = ({
             if (payload.new) {
               const newMsg = payload.new as ChatMessage;
               setMessages((prev) => {
-                if (prev.some(m => m.id === newMsg.id)) return prev;
+                if (prev.some(m => m.id === newMsg.id || (m.content === newMsg.content && m.sender_role === newMsg.sender_role))) {
+                  return prev.map(m => (m.content === newMsg.content && m.id.startsWith('temp_') ? newMsg : m));
+                }
                 return [...prev, newMsg];
               });
               if (newMsg.sender_role === 'landlord' && !landlordFirstMessageSent) {
@@ -140,18 +142,59 @@ export const MatchChatModal: React.FC<MatchChatModalProps> = ({
         )
         .subscribe();
     } catch (realtimeErr) {
-      console.warn('Realtime subscription fallback to polling:', realtimeErr);
+      console.warn('Realtime subscription fallback:', realtimeErr);
     }
 
-    // 2. Polling de respaldo cada 8 segundos con suspensión en segundo plano
+    // 2. Sincronización instantánea cross-tab y eventos locales
+    let broadcast: BroadcastChannel | null = null;
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        broadcast = new BroadcastChannel('rentia_chat_sync');
+        broadcast.onmessage = (event) => {
+          if (event.data?.matchId === match.id && event.data?.message) {
+            const incomingMsg = event.data.message as ChatMessage;
+            setMessages((prev) => {
+              if (prev.some(m => m.id === incomingMsg.id)) return prev;
+              return [...prev, incomingMsg];
+            });
+            if (incomingMsg.sender_role === 'landlord' && !landlordFirstMessageSent) {
+              setLandlordFirstMessageSent(true);
+            }
+          }
+        };
+      }
+    } catch {
+      // Ignore broadcast errors in unsupported envs
+    }
+
+    const handleLocalInstantMsg = (e: any) => {
+      if (e.detail?.matchId === match.id && e.detail?.message) {
+        const msg = e.detail.message as ChatMessage;
+        setMessages((prev) => {
+          if (prev.some(m => m.id === msg.id)) return prev;
+          return [...prev, msg];
+        });
+      }
+    };
+    window.addEventListener('rentia_instant_message', handleLocalInstantMsg);
+
+    // 3. Polling ultrarrápido (1.5 segundos) para mensajes inmediatos cuando la ventana está activa
     const interval = setInterval(() => {
       if (!document.hidden) {
         fetchMessages(false);
       }
-    }, 8000);
+    }, 1500);
+
+    const onFocus = () => fetchMessages(false);
+    window.addEventListener('focus', onFocus);
 
     return () => {
       clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('rentia_instant_message', handleLocalInstantMsg);
+      if (broadcast) {
+        broadcast.close();
+      }
       if (channel) {
         supabase.removeChannel(channel);
       }
@@ -171,9 +214,36 @@ export const MatchChatModal: React.FC<MatchChatModalProps> = ({
     if (!inputText.trim() || sending || isInputDisabled) return;
 
     const messageContent = inputText.trim();
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const optimisticMessage: ChatMessage = {
+      id: tempId,
+      match_id: match.id,
+      sender_id: currentUserId || (isLandlord ? 'landlord' : 'tenant'),
+      sender_role: isLandlord ? 'landlord' : 'tenant',
+      content: messageContent,
+      created_at: new Date().toISOString(),
+    };
+
+    // Entrega instantánea inmediata en la interfaz (<1ms)
     setInputText('');
+    setMessages((prev) => [...prev, optimisticMessage]);
+    scrollToBottom();
     setSending(true);
     setErrorMessage(null);
+
+    // Difundir inmediatamente para sincronización instantánea
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        const bc = new BroadcastChannel('rentia_chat_sync');
+        bc.postMessage({ matchId: match.id, message: optimisticMessage });
+        bc.close();
+      }
+      window.dispatchEvent(new CustomEvent('rentia_instant_message', {
+        detail: { matchId: match.id, message: optimisticMessage },
+      }));
+    } catch {
+      // Ignore broadcast errors
+    }
 
     try {
       const res = await api.matching.sendMessage({
@@ -182,7 +252,10 @@ export const MatchChatModal: React.FC<MatchChatModalProps> = ({
       });
 
       if (res.success && res.message) {
-        setMessages((prev) => [...prev, res.message]);
+        // Reemplazar mensaje temporal con el registrado en el backend
+        setMessages((prev) =>
+          prev.map((m) => (m.id === tempId ? res.message : m))
+        );
         if (res.landlord_first_message_sent && !landlordFirstMessageSent) {
           setLandlordFirstMessageSent(true);
           if (onMatchUpdated) {
@@ -196,7 +269,9 @@ export const MatchChatModal: React.FC<MatchChatModalProps> = ({
     } catch (err: any) {
       console.error('Erreur envoi message:', err);
       setErrorMessage(err.message || 'Impossible d\'envoyer le message.');
-      setInputText(messageContent); // Restaurer le texte
+      // En caso de fallo de red, retirar el mensaje optimista y restaurar texto
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      setInputText(messageContent);
     } finally {
       setSending(false);
     }

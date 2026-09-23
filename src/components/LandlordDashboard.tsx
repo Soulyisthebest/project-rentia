@@ -38,6 +38,7 @@ interface LandlordDashboardProps {
   };
   onNavigateToChat: () => void;
   onNavigateToSwipe?: () => void;
+  onNavigateToPublish?: () => void;
   language: Language;
 }
 
@@ -45,6 +46,7 @@ export const LandlordDashboard: React.FC<LandlordDashboardProps> = ({
   currentUser,
   onNavigateToChat,
   onNavigateToSwipe,
+  onNavigateToPublish,
   language,
 }) => {
   const t = TRANSLATIONS[language];
@@ -235,7 +237,13 @@ export const LandlordDashboard: React.FC<LandlordDashboardProps> = ({
 
             <button
               type="button"
-              onClick={() => setShowCreateModal(true)}
+              onClick={() => {
+                if (onNavigateToPublish) {
+                  onNavigateToPublish();
+                } else {
+                  setShowCreateModal(true);
+                }
+              }}
               className="px-4 py-2 rounded-xl bg-[#1E1B4B] hover:bg-[#28235C] text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs"
               id="btn-landlord-create-listing"
             >
@@ -381,21 +389,68 @@ export const LandlordDashboard: React.FC<LandlordDashboardProps> = ({
           </div>
         ) : filteredListings.length === 0 ? (
           <div className="p-12 text-center bg-white rounded-3xl border border-stone-200">
-            <Building2 className="w-10 h-10 text-stone-300 mx-auto mb-3" />
-            <h3 className="font-bold text-sm text-[#1E1B4B] mb-1">
-              {t.noListingsPublishedYet}
-            </h3>
-            <p className="text-xs text-stone-500 mb-4 max-w-sm mx-auto">
-              {t.noListingsPublishedYetDesc}
-            </p>
-            <button
-              type="button"
-              onClick={() => setShowCreateModal(true)}
-              className="px-4 py-2 rounded-xl bg-[#1E1B4B] text-white text-xs font-bold hover:bg-[#28235C] transition-colors inline-flex items-center gap-1.5 shadow-xs"
-            >
-              <Plus className="w-4 h-4 text-[#D97706]" />
-              <span>{t.createFirstListingBtn}</span>
-            </button>
+            {searchTerm.trim() ? (
+              <>
+                <Search className="w-10 h-10 text-stone-300 mx-auto mb-3" />
+                <h3 className="font-bold text-sm text-[#1E1B4B] mb-1">
+                  Sin resultados para "{searchTerm}"
+                </h3>
+                <p className="text-xs text-stone-500 max-w-sm mx-auto">
+                  Prueba a buscar con otros términos como ciudad o barrio.
+                </p>
+              </>
+            ) : statusFilter === 'rented' ? (
+              <>
+                <Lock className="w-10 h-10 text-amber-500/70 mx-auto mb-3" />
+                <h3 className="font-bold text-sm text-[#1E1B4B] mb-1">
+                  No tienes inmuebles alquilados
+                </h3>
+                <p className="text-xs text-stone-500 max-w-sm mx-auto">
+                  Aquí aparecerán las viviendas que marques como alquiladas o reservadas en tu cartera.
+                </p>
+              </>
+            ) : statusFilter === 'inactive' ? (
+              <>
+                <Power className="w-10 h-10 text-stone-400 mx-auto mb-3" />
+                <h3 className="font-bold text-sm text-[#1E1B4B] mb-1">
+                  No tienes inmuebles desactivados
+                </h3>
+                <p className="text-xs text-stone-500 max-w-sm mx-auto">
+                  Aquí aparecerán los anuncios que pauses o desactives temporalmente.
+                </p>
+              </>
+            ) : statusFilter === 'available' ? (
+              <>
+                <Building2 className="w-10 h-10 text-stone-300 mx-auto mb-3" />
+                <h3 className="font-bold text-sm text-[#1E1B4B] mb-1">
+                  No tienes inmuebles disponibles
+                </h3>
+                <p className="text-xs text-stone-500 max-w-sm mx-auto">
+                  Actualmente no tienes ningún anuncio activo en alquiler.
+                </p>
+              </>
+            ) : (
+              <>
+                <Building2 className="w-10 h-10 text-stone-300 mx-auto mb-3" />
+                <h3 className="font-bold text-sm text-[#1E1B4B] mb-1">
+                  {t.noListingsPublishedYet}
+                </h3>
+                <p className="text-xs text-stone-500 mb-4 max-w-sm mx-auto">
+                  Para crear tu anuncio, ve al apartado <strong>Publicar anuncio</strong> situado al lado de Anuncios.
+                </p>
+                {onNavigateToPublish && (
+                  <button
+                    type="button"
+                    onClick={onNavigateToPublish}
+                    className="px-4 py-2 rounded-xl bg-[#1E1B4B] text-white text-xs font-bold hover:bg-[#28235C] transition-colors inline-flex items-center gap-1.5 shadow-xs"
+                    id="btn-go-to-publish-tab"
+                  >
+                    <Plus className="w-4 h-4 text-[#D97706]" />
+                    <span>Ir a Publicar anuncio</span>
+                  </button>
+                )}
+              </>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

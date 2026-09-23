@@ -218,6 +218,8 @@ export const api = {
     updateFinancialProfile: (data: {
       userId?: string;
       email?: string;
+      photos?: string[];
+      avatar_url?: string;
       monthly_income?: number;
       employment_type?: string;
       has_guarantor?: boolean;
@@ -227,6 +229,7 @@ export const api = {
       max_budget?: number;
       target_city?: string;
       bio?: string;
+      [key: string]: any;
     }) =>
       request<{ success: boolean; message: string; profile: any }>('/tenant/profile/financial', {
         method: 'PUT',

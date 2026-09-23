@@ -29,14 +29,19 @@ import L from 'leaflet';
 import { Language } from '../i18n/translations';
 import { PropertyDetailsModal } from './PropertyDetailsModal';
 import { ReportModal } from './ReportModal';
+import { TenantPhotoRequiredGate } from './TenantPhotoRequiredGate';
 import { SEED_LISTINGS } from '../data/seedListings';
 import { api } from '../api/client';
+import { TenantProfile } from '../types';
 
 interface IdealistaMapSearchProps {
   language: Language;
   onLikeListing?: (listingId: string) => void;
   likedListingIds?: string[];
   isLandlord?: boolean;
+  tenant?: TenantProfile;
+  onPhotosUpdated?: (photos: string[]) => void;
+  onOpenQuiz?: () => void;
 }
 
 // Provincias y regiones de España con coordenadas y zoom óptimo
@@ -85,6 +90,9 @@ export const IdealistaMapSearch: React.FC<IdealistaMapSearchProps> = ({
   onLikeListing,
   likedListingIds = [],
   isLandlord = false,
+  tenant,
+  onPhotosUpdated,
+  onOpenQuiz,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -479,6 +487,25 @@ export const IdealistaMapSearch: React.FC<IdealistaMapSearchProps> = ({
   const handleZoomOut = () => {
     mapInstanceRef.current?.zoomOut();
   };
+
+  // Regla estricta: Inquilinos deben tener al menos 3 fotos para ver/explorar propiedades en el mapa
+  if (!isLandlord && (!tenant?.photos || tenant.photos.length < 3)) {
+    return (
+      <div className="w-full min-h-[75vh] flex items-center justify-center py-6 px-4">
+        <TenantPhotoRequiredGate
+          currentPhotos={tenant?.photos || []}
+          currentUser={{ id: tenant?.id, email: tenant?.email, name: tenant?.fullName }}
+          language={language}
+          onPhotosSaved={(savedPhotos) => {
+            if (onPhotosUpdated) {
+              onPhotosUpdated(savedPhotos);
+            }
+          }}
+          onOpenMatchingQuiz={onOpenQuiz}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-[calc(100vh-80px)] w-full relative bg-stone-100 overflow-hidden" id="idealista-map-search-view">

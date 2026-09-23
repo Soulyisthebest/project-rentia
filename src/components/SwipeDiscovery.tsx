@@ -14,14 +14,15 @@ import {
   PawPrint,
   BedDouble,
   CheckCircle2,
-  Plus,
   Navigation as NavigationIcon,
-  Loader2
+  Loader2,
+  RotateCcw
 } from 'lucide-react';
 import { TenantProfile } from '../types';
 import { Language, TRANSLATIONS } from '../i18n/translations';
 import { api } from '../api/client';
-import { CreateListingModal, ANDALUSIA_CITIES } from './CreateListingModal';
+import { ANDALUSIA_CITIES } from './CreateListingModal';
+import { TenantPhotoRequiredGate } from './TenantPhotoRequiredGate';
 import { SEED_LISTINGS } from '../data/mockData';
 
 // Coordonnées approximatives des 8 capitales provinciales d'Andalousie
@@ -55,6 +56,8 @@ interface SwipeDiscoveryProps {
   language: Language;
   onOpenPassportTab?: () => void;
   onNavigateToChat?: () => void;
+  onOpenQuiz?: () => void;
+  onPhotosUpdated?: (photos: string[]) => void;
   currentUserEmail?: string;
 }
 
@@ -63,6 +66,8 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
   language,
   onOpenPassportTab,
   onNavigateToChat,
+  onOpenQuiz,
+  onPhotosUpdated,
   currentUserEmail,
 }) => {
   const t = TRANSLATIONS[language];
@@ -74,7 +79,6 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
   const [compatibility, setCompatibility] = useState<any | null>(null);
   const [showDetailsSheet, setShowDetailsSheet] = useState(false);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
-  const [showCreateListingModal, setShowCreateListingModal] = useState(false);
 
   // Andalusia City Filter and Geolocation State
   const [selectedCity, setSelectedCity] = useState<string>('all');
@@ -301,32 +305,25 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
           </div>
 
           <div className="pt-2 space-y-2">
-            <button
-              onClick={() => setShowCreateListingModal(true)}
-              className="w-full py-3 bg-[#1E1B4B] hover:bg-[#28235C] text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-2"
-            >
-              <Plus className="w-4 h-4" />
-              <span>{t.publishFirstListingBtn}</span>
-            </button>
+            {selectedCity !== 'all' && (
+              <button
+                onClick={() => setSelectedCity('all')}
+                className="w-full py-3 bg-[#1E1B4B] hover:bg-[#28235C] text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-2"
+              >
+                <MapPin className="w-4 h-4 text-[#D97706]" />
+                <span>Ver todas las ciudades de Andalucía</span>
+              </button>
+            )}
 
             <button
               onClick={fetchListings}
-              className="w-full py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-semibold transition-colors"
+              className="w-full py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-2"
             >
-              {t.refreshListingsBtn}
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>{t.refreshListingsBtn}</span>
             </button>
           </div>
         </div>
-
-        {showCreateListingModal && (
-          <CreateListingModal
-            onClose={() => setShowCreateListingModal(false)}
-            onListingCreated={fetchListings}
-            currentUserEmail={currentUserEmail}
-            currentUserId={tenant?.id}
-            language={language}
-          />
-        )}
       </div>
     );
   }
@@ -357,29 +354,47 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
           <div className="space-y-2">
             <button
               onClick={() => setCurrentIndex(0)}
-              className="w-full py-3 bg-[#1E1B4B] text-white rounded-xl text-xs font-bold hover:bg-[#28235C] transition-colors"
+              className="w-full py-3 bg-[#1E1B4B] text-white rounded-xl text-xs font-bold hover:bg-[#28235C] transition-colors flex items-center justify-center gap-2"
             >
-              {t.reviewListingsBtn}
+              <RotateCcw className="w-4 h-4 text-[#D97706]" />
+              <span>{t.reviewListingsBtn}</span>
             </button>
-            <button
-              onClick={() => setShowCreateListingModal(true)}
-              className="w-full py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-1.5"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>{t.addAnotherListingBtn}</span>
-            </button>
+            {selectedCity !== 'all' && (
+              <button
+                onClick={() => {
+                  setSelectedCity('all');
+                  setCurrentIndex(0);
+                }}
+                className="w-full py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-1.5"
+              >
+                <MapPin className="w-3.5 h-3.5" />
+                <span>Explorar todas las provincias</span>
+              </button>
+            )}
           </div>
         </div>
+      </div>
+    );
+  }
 
-        {showCreateListingModal && (
-          <CreateListingModal
-            onClose={() => setShowCreateListingModal(false)}
-            onListingCreated={fetchListings}
-            currentUserEmail={currentUserEmail}
-            currentUserId={tenant?.id}
-            language={language}
-          />
-        )}
+  // Regla estricta: Cada inquilino debe tener al menos 3 fotos para mirar/explorar propiedades
+  const tenantPhotos = tenant?.photos || [];
+  const hasMin3Photos = tenantPhotos.length >= 3;
+
+  if (!hasMin3Photos) {
+    return (
+      <div className="w-full min-h-[75vh] flex items-center justify-center py-4">
+        <TenantPhotoRequiredGate
+          currentPhotos={tenantPhotos}
+          currentUser={{ id: tenant?.id, email: currentUserEmail || tenant?.email, name: tenant?.fullName }}
+          language={language}
+          onPhotosSaved={(savedPhotos) => {
+            if (onPhotosUpdated) {
+              onPhotosUpdated(savedPhotos);
+            }
+          }}
+          onOpenMatchingQuiz={onOpenQuiz}
+        />
       </div>
     );
   }
@@ -398,18 +413,20 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
       {/* Andalusia Filter & Geolocation Bar */}
       {renderCitySelectorBar()}
 
-      {/* Top quick action bar to publish real listings */}
-      <div className="w-full flex items-center justify-between pb-2 px-1">
+      {/* Top quick action bar with Matching Quiz trigger */}
+      <div className="w-full flex items-center justify-between pb-2 px-1 gap-2">
         <span className="text-[11px] font-bold text-stone-500 uppercase tracking-wider">
           {listings.length} {t.availableListingsCount}
         </span>
-        <button
-          onClick={() => setShowCreateListingModal(true)}
-          className="text-xs font-bold text-[#1E1B4B] hover:text-[#D97706] flex items-center gap-1 transition-colors"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span>{t.publishListingBtn}</span>
-        </button>
+        {onOpenQuiz && (
+          <button
+            onClick={onOpenQuiz}
+            className="text-xs font-bold text-amber-800 bg-amber-100 hover:bg-amber-200 border border-amber-300 px-2.5 py-1 rounded-xl flex items-center gap-1 transition-all shadow-2xs"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+            <span>Mi Matching</span>
+          </button>
+        )}
       </div>
 
       {/* IMMERSIVE TINDER CARD CONTAINER */}
@@ -674,17 +691,6 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
             </div>
           </div>
         </div>
-      )}
-
-      {/* Create Listing Modal */}
-      {showCreateListingModal && (
-        <CreateListingModal
-          onClose={() => setShowCreateListingModal(false)}
-          onListingCreated={fetchListings}
-          currentUserEmail={currentUserEmail}
-          currentUserId={tenant?.id}
-          language={language}
-        />
       )}
 
     </div>

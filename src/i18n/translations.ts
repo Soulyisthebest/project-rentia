@@ -311,6 +311,7 @@ export interface Translations {
   phoneRequiredError: string;
   phoneMandatoryBadge: string;
   navLandlordDashboard: string;
+  navLandlordPublish: string;
   navLandlordSwipe: string;
   navLandlordVerify: string;
   roleBadgeTenant: string;
@@ -374,6 +375,7 @@ export const TRANSLATIONS: Record<Language, Translations> = {
     phoneRequiredError: 'El número de teléfono es obligatorio.',
     phoneMandatoryBadge: 'Obligatorio (1 número = 1 cuenta)',
     navLandlordDashboard: 'Anuncios',
+    navLandlordPublish: 'Publicar anuncio',
     navLandlordSwipe: 'Candidatos (Swipe)',
     navLandlordLikes: 'Perfiles con Like',
     navLandlordVerify: 'Validar contrato',
@@ -729,6 +731,7 @@ export const TRANSLATIONS: Record<Language, Translations> = {
     phoneRequiredError: 'Phone number is mandatory.',
     phoneMandatoryBadge: 'Mandatory (1 number = 1 account)',
     navLandlordDashboard: 'Listings',
+    navLandlordPublish: 'Publish listing',
     navLandlordSwipe: 'Candidates (Swipe)',
     navLandlordLikes: 'Liked Profiles',
     navLandlordVerify: 'Verify lease',
@@ -1084,6 +1087,7 @@ export const TRANSLATIONS: Record<Language, Translations> = {
     phoneRequiredError: 'Le numéro de téléphone est obligatoire.',
     phoneMandatoryBadge: 'Obligatoire (1 numéro = 1 compte)',
     navLandlordDashboard: 'Annonces',
+    navLandlordPublish: 'Publier une annonce',
     navLandlordSwipe: 'Candidats (Swipe)',
     navLandlordLikes: 'Profils Likés',
     navLandlordVerify: 'Vérifier un bail',

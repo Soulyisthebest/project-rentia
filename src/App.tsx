@@ -3,6 +3,7 @@ import { Header } from './components/Header';
 import { WelcomeLanding } from './components/WelcomeLanding';
 import { RoleSelectionModal } from './components/RoleSelectionModal';
 import { LandlordDashboard } from './components/LandlordDashboard';
+import { PublishListingView } from './components/PublishListingView';
 import { PassportCard } from './components/PassportCard';
 import { TrustStats } from './components/TrustStats';
 import { RentalHistoryList } from './components/RentalHistoryList';
@@ -15,6 +16,7 @@ import { NotificationPermissionModal } from './components/NotificationPermission
 import { SwipeDiscovery } from './components/SwipeDiscovery';
 import { LandlordSwipeDiscovery } from './components/LandlordSwipeDiscovery';
 import { MatchesListView } from './components/MatchesListView';
+import { TenantGamifiedOnboardingModal } from './components/TenantGamifiedOnboardingModal';
 import { AddLeaseModal } from './components/AddLeaseModal';
 import { SharePassportModal } from './components/SharePassportModal';
 import { AuthModal } from './components/AuthModal';
@@ -35,14 +37,31 @@ import { useSessionTracker } from './lib/useSessionTracker';
 
 export default function App() {
   const [language, setLanguage] = useState<Language>('es'); // Default Spanish
-  const [tenant, setTenant] = useState<TenantProfile>(INITIAL_TENANT);
+  const [tenant, setTenant] = useState<TenantProfile>(() => {
+    try {
+      const stored = localStorage.getItem('rentia_tenant_photos');
+      if (stored) {
+        const photos = JSON.parse(stored);
+        if (Array.isArray(photos) && photos.length > 0) {
+          return {
+            ...INITIAL_TENANT,
+            photos,
+            avatarUrl: photos[0] || INITIAL_TENANT.avatarUrl,
+          };
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return INITIAL_TENANT;
+  });
   const [currentUser, setCurrentUser] = useState<{ id: string; email: string; name?: string; role?: UserRole } | null>(null);
   const [leases, setLeases] = useState<RentalLease[]>(INITIAL_LEASES);
 
   // Automated user session & time-in-app tracking (active vs idle time, heartbeats, page changes)
   useSessionTracker(currentUser?.id, currentUser?.email);
 
-  const [currentView, setCurrentView] = useState<ViewMode>('tenant_passport');
+  const [currentView, setCurrentView] = useState<ViewMode>('matching_discovery');
   const [hasDeepLink, setHasDeepLink] = useState(false);
 
   // Modals state
@@ -50,6 +69,7 @@ export default function App() {
   const [authSelectedRole, setAuthSelectedRole] = useState<UserRole>('tenant');
   const [authInitialMode, setAuthInitialMode] = useState<'login' | 'register'>('login');
 
+  const [isTenantQuizOpen, setIsTenantQuizOpen] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
@@ -117,24 +137,48 @@ export default function App() {
         if (assignedRole === 'admin') {
           setCurrentView(prev => (prev === 'admin_panel' ? 'admin_panel' : prev));
         } else if (assignedRole === 'landlord') {
-          setCurrentView(prev => (prev === 'tenant_passport' || prev === 'matching_discovery' || prev === 'certificate_export' ? 'landlord_dashboard' : prev));
+          setCurrentView(prev => (prev === 'tenant_passport' || prev === 'matching_discovery' || prev === 'certificate_export' ? 'landlord_swipe' : prev));
+        } else {
+          setCurrentView(prev => (prev === 'tenant_passport' || prev === 'certificate_export' ? 'matching_discovery' : prev));
+          const isQuizDone = localStorage.getItem('rentia_tenant_quiz_completed_current') === 'true' || 
+                             localStorage.getItem(`rentia_tenant_quiz_completed_${tData.id}`) === 'true' ||
+                             Boolean(tData.onboarding_completed || tData.onboardingCompleted);
+          if (!isQuizDone) {
+            setIsTenantQuizOpen(true);
+          }
         }
 
-        setTenant(prev => ({
-          ...prev,
-          id: tData.id,
-          role: assignedRole,
-          passportId: tData.id ? `RNTA-${tData.id.substring(0, 4).toUpperCase()}` : '',
-          passportNumber: tData.id ? `RNTA-ES-${tData.id.substring(0, 4).toUpperCase()}` : '',
-          fullName: tData.name || '',
-          email: tData.email || '',
-          phone: tData.phone || '',
-          trustScore: tData.trustScore ?? 0,
-          stats: {
-            ...prev.stats,
-            ...(tData.stats || {}),
-          },
-        }));
+        const storedPhotos = localStorage.getItem('rentia_tenant_photos');
+        let parsedPhotos: string[] = [];
+        try {
+          if (storedPhotos) parsedPhotos = JSON.parse(storedPhotos);
+        } catch {
+          // ignore
+        }
+
+        setTenant(prev => {
+          const finalPhotos = (tData.photos && tData.photos.length > 0)
+            ? tData.photos
+            : (parsedPhotos.length > 0 ? parsedPhotos : (prev.photos || []));
+
+          return {
+            ...prev,
+            id: tData.id,
+            role: assignedRole,
+            passportId: tData.id ? `RNTA-${tData.id.substring(0, 4).toUpperCase()}` : '',
+            passportNumber: tData.id ? `RNTA-ES-${tData.id.substring(0, 4).toUpperCase()}` : '',
+            fullName: tData.name || '',
+            email: tData.email || '',
+            phone: tData.phone || '',
+            avatarUrl: tData.avatar_url || (finalPhotos[0] || prev.avatarUrl),
+            photos: finalPhotos,
+            trustScore: tData.trustScore ?? 0,
+            stats: {
+              ...prev.stats,
+              ...(tData.stats || {}),
+            },
+          };
+        });
       }
 
       // 2. Fetch leases from Supabase
@@ -262,6 +306,22 @@ export default function App() {
     }, 3500);
   };
 
+  const handleTenantPhotosUpdated = (newPhotos: string[]) => {
+    localStorage.setItem('rentia_tenant_photos', JSON.stringify(newPhotos));
+    setTenant(prev => ({
+      ...prev,
+      photos: newPhotos,
+      avatarUrl: newPhotos[0] || prev.avatarUrl,
+    }));
+    showToast(
+      language === 'es'
+        ? '¡3 fotos verificadas añadidas! Propiedades desbloqueadas con éxito.'
+        : language === 'en'
+        ? '3 verified photos added! Properties unlocked successfully.'
+        : '3 photos vérifiées ajoutées ! Propriétés débloquées avec succès.'
+    );
+  };
+
   const handleAuthSuccess = (userData: any, token?: string) => {
     if (userData) {
       if (token) {
@@ -280,9 +340,14 @@ export default function App() {
       if (userRole === 'admin') {
         setCurrentView('admin_panel');
       } else if (userRole === 'landlord') {
-        setCurrentView('landlord_dashboard');
+        setCurrentView('landlord_swipe');
       } else {
-        setCurrentView('tenant_passport');
+        setCurrentView('matching_discovery');
+        const isQuizDone = localStorage.getItem('rentia_tenant_quiz_completed_current') === 'true' || 
+                           localStorage.getItem(`rentia_tenant_quiz_completed_${userData.id}`) === 'true';
+        if (!isQuizDone) {
+          setIsTenantQuizOpen(true);
+        }
       }
 
       setTenant(prev => ({
@@ -513,7 +578,22 @@ export default function App() {
                 currentUser={{ id: currentUser.id, email: currentUser.email, name: currentUser.name }}
                 onNavigateToChat={() => setCurrentView('matches_chat')}
                 onNavigateToSwipe={() => setCurrentView('landlord_swipe')}
+                onNavigateToPublish={() => setCurrentView('landlord_publish')}
                 language={language}
+              />
+            )}
+
+            {/* VIEW L1.5: Landlord Publish Listing (Apartado exclusivo Publicar Anuncio al lado de Anuncios) */}
+            {currentView === 'landlord_publish' && (
+              <PublishListingView
+                currentUserId={currentUser.id}
+                currentUserEmail={currentUser.email}
+                language={language}
+                onListingCreated={() => {
+                  setCurrentView('landlord_dashboard');
+                  refreshBackendData();
+                }}
+                onBackToDashboard={() => setCurrentView('landlord_dashboard')}
               />
             )}
 
@@ -573,6 +653,9 @@ export default function App() {
               <IdealistaMapSearch
                 language={language}
                 isLandlord={isLandlord}
+                tenant={tenant}
+                onPhotosUpdated={handleTenantPhotosUpdated}
+                onOpenQuiz={() => setIsTenantQuizOpen(true)}
                 onLikeListing={async (listingId) => {
                   try {
                     await api.matching.swipe({
@@ -596,6 +679,8 @@ export default function App() {
                 language={language}
                 onOpenPassportTab={() => setCurrentView('tenant_passport')}
                 onNavigateToChat={() => setCurrentView('matches_chat')}
+                onOpenQuiz={() => setIsTenantQuizOpen(true)}
+                onPhotosUpdated={handleTenantPhotosUpdated}
                 currentUserEmail={currentUser?.email || ''}
               />
             )}
@@ -848,6 +933,35 @@ export default function App() {
 
       {/* Onboarding de Notificaciones (Web y Móvil) */}
       <NotificationPermissionModal language={language} />
+
+      {/* Cuestionario de Matching y Onboarding Inteligente Gamificado del Inquilino */}
+      <TenantGamifiedOnboardingModal
+        isOpen={isTenantQuizOpen}
+        onClose={() => setIsTenantQuizOpen(false)}
+        currentUser={{
+          id: tenant.id || currentUser?.id || 'demo_tenant',
+          email: currentUser?.email || tenant.email,
+          name: currentUser?.name || tenant.fullName,
+        }}
+        currentTenant={tenant}
+        onSaved={(updatedProfile) => {
+          setTenant(prev => ({
+            ...prev,
+            ...updatedProfile,
+            fullName: updatedProfile.fullName || updatedProfile.name || prev.fullName,
+            avatarUrl: updatedProfile.avatarUrl || updatedProfile.photos?.[0] || prev.avatarUrl,
+            photos: updatedProfile.photos || prev.photos,
+          }));
+          showToast(
+            language === 'es'
+              ? '¡Perfil de matching completado con éxito! Algoritmo calibrado.'
+              : language === 'en'
+              ? 'Matching profile completed! Algorithm calibrated.'
+              : 'Profil de matching complété avec succès ! Algorithme calibré.'
+          );
+          refreshBackendData();
+        }}
+      />
 
     </div>
   );

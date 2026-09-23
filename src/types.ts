@@ -143,6 +143,50 @@ export interface TenantProfile {
   guarantorIncome?: number;
   hasPets?: boolean;
   petDetails?: string;
+  photos?: string[];
+  age?: number;
+  householdType?: 'solo' | 'couple' | 'family' | 'flatmates';
+  occupantsCount?: number;
+  hasMinors?: boolean;
+  petType?: string;
+  petsCount?: number;
+  propertyTypes?: string[];
+  searchPurpose?: string;
+  desiredRooms?: string;
+  desiredBathrooms?: string;
+  minBudget?: number;
+  maxBudget?: number;
+  stretchBudget?: number;
+  utilitiesIncluded?: {
+    community?: boolean;
+    water?: boolean;
+    electricity?: boolean;
+    internet?: boolean;
+  };
+  targetCity?: string;
+  targetNeighborhoods?: string[];
+  searchRadiusKm?: number;
+  maxCommuteMinutes?: number;
+  transportMode?: 'walking' | 'bike' | 'public' | 'car' | 'moto';
+  essentialAmenities?: string[];
+  amenityPriorities?: Record<string, 'essential' | 'like' | 'neutral' | 'dislike'>;
+  smoking?: 'no' | 'yes' | 'outside';
+  remoteWork?: 'never' | 'sometimes' | 'mostly';
+  lifestyleVibe?: 'tranquil' | 'normal' | 'social';
+  wantsRoommates?: 'yes' | 'no' | 'any';
+  roomPreferences?: {
+    quietVibe?: boolean;
+    likesGuests?: boolean;
+    prefersStudents?: boolean;
+    prefersProfessionals?: boolean;
+    sharesBathroom?: boolean;
+    privateRoom?: boolean;
+  };
+  incomeRange?: string;
+  canProvideDocs?: 'yes' | 'no' | 'later';
+  moveInDate?: string;
+  rentalDuration?: '1-3m' | '3-6m' | '6-12m' | '1-2y' | 'long_term' | 'flexible';
+  onboardingCompleted?: boolean;
   isVerified?: boolean;
   verificationStatus?: 'unverified' | 'pending_admin' | 'verified' | 'rejected';
   dniUrl?: string;
@@ -318,6 +362,7 @@ export type ViewMode =
   | 'idealista_map_search'
   | 'landlord_listings' 
   | 'landlord_dashboard' 
+  | 'landlord_publish'
   | 'matches_chat' 
   | 'admin_panel' 
   | 'tenant_likes'

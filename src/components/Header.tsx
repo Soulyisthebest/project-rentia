@@ -16,7 +16,8 @@ import {
   Heart,
   ShieldAlert,
   Map,
-  FileCheck2
+  FileCheck2,
+  PlusCircle
 } from 'lucide-react';
 import { ViewMode, UserRole } from '../types';
 import { Language, TRANSLATIONS } from '../i18n/translations';
@@ -116,7 +117,21 @@ export const Header: React.FC<HeaderProps> = ({
                 <span>{t.navLandlordDashboard}</span>
               </button>
 
-              {/* Tab 2: Landlord Swipe (Candidatos Swipe) */}
+              {/* Tab 2: Publicar Anuncio (Apartado exclusivo al lado de Anuncios) */}
+              <button
+                onClick={() => navigateView('landlord_publish')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  currentView === 'landlord_publish'
+                    ? 'bg-[#1E1B4B] text-white shadow-xs'
+                    : 'text-stone-600 hover:text-[#1E1B4B] hover:bg-stone-50'
+                }`}
+                id="nav-tab-landlord-publish"
+              >
+                <PlusCircle className={`w-3.5 h-3.5 ${currentView === 'landlord_publish' ? 'text-[#D97706]' : 'text-amber-600'}`} />
+                <span>{t.navLandlordPublish}</span>
+              </button>
+
+              {/* Tab 3: Landlord Swipe (Candidatos Swipe) */}
               <button
                 onClick={() => navigateView('landlord_swipe')}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
