@@ -22,7 +22,7 @@ import { TenantProfile } from '../types';
 import { Language, TRANSLATIONS } from '../i18n/translations';
 import { api } from '../api/client';
 import { ANDALUSIA_CITIES } from './CreateListingModal';
-import { TenantPhotoRequiredGate } from './TenantPhotoRequiredGate';
+import { TenantPhotoGate } from './TenantPhotoGate';
 import { SEED_LISTINGS } from '../data/mockData';
 
 // Coordonnées approximatives des 8 capitales provinciales d'Andalousie
@@ -384,7 +384,7 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
   if (!hasMin3Photos) {
     return (
       <div className="w-full min-h-[75vh] flex items-center justify-center py-4">
-        <TenantPhotoRequiredGate
+        <TenantPhotoGate
           currentPhotos={tenantPhotos}
           currentUser={{ id: tenant?.id, email: currentUserEmail || tenant?.email, name: tenant?.fullName }}
           language={language}

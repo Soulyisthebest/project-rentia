@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { 
   User, 
   Home, 
@@ -36,6 +36,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import { TenantProfile } from '../types';
+import { useTenantPhotoRequirement, SAMPLE_TENANT_PHOTOS } from '../hooks/useTenantPhotoRequirement';
 
 interface TenantGamifiedOnboardingModalProps {
   isOpen: boolean;
@@ -48,15 +49,6 @@ interface TenantGamifiedOnboardingModalProps {
   currentTenant?: TenantProfile;
   onSaved?: (updatedTenant: any) => void;
 }
-
-// Sample realistic high quality tenant photos to allow 1-click test fill
-const SAMPLE_TENANT_PHOTOS = [
-  'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=600&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=600&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=600&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=600&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=600&auto=format&fit=crop&q=80',
-];
 
 const AMENITIES_LIST = [
   { id: 'terraza', label: 'Terraza', icon: '☀️' },
@@ -95,13 +87,29 @@ export const TenantGamifiedOnboardingModal: React.FC<TenantGamifiedOnboardingMod
   const [age, setAge] = useState<number | string>(currentTenant?.age || 28);
   const [phone, setPhone] = useState<string>(currentTenant?.phone || '+34 612 345 678');
   const [email, setEmail] = useState<string>(currentTenant?.email || currentUser.email || '');
-  const [photos, setPhotos] = useState<string[]>(
-    currentTenant?.photos && currentTenant.photos.length > 0
-      ? currentTenant.photos
-      : currentTenant?.avatarUrl
-      ? [currentTenant.avatarUrl, SAMPLE_TENANT_PHOTOS[0], SAMPLE_TENANT_PHOTOS[1]]
-      : [SAMPLE_TENANT_PHOTOS[0], SAMPLE_TENANT_PHOTOS[1], SAMPLE_TENANT_PHOTOS[2]]
-  );
+
+  const initialTenantPhotos = useMemo(() => {
+    if (currentTenant?.photos && currentTenant.photos.length > 0) {
+      return currentTenant.photos;
+    }
+    if (currentTenant?.avatarUrl) {
+      return [currentTenant.avatarUrl, SAMPLE_TENANT_PHOTOS[0], SAMPLE_TENANT_PHOTOS[1]];
+    }
+    return [SAMPLE_TENANT_PHOTOS[0], SAMPLE_TENANT_PHOTOS[1], SAMPLE_TENANT_PHOTOS[2]];
+  }, [currentTenant]);
+
+  const {
+    photos,
+    photoCount,
+    isSatisfied: hasMinPhotos,
+    remainingNeeded: photosRemaining,
+    validationErrorMessage: photoValidationErrorMessage,
+    addPhoto,
+    removePhoto: handleRemovePhoto,
+    addSamplePhotos,
+    setPhotos,
+  } = useTenantPhotoRequirement(initialTenantPhotos);
+
   const [photoInputUrl, setPhotoInputUrl] = useState<string>('');
   const [householdType, setHouseholdType] = useState<'solo' | 'couple' | 'family' | 'flatmates'>(
     currentTenant?.householdType || 'solo'
@@ -218,7 +226,7 @@ export const TenantGamifiedOnboardingModal: React.FC<TenantGamifiedOnboardingMod
   // Helpers for photos
   const handleAddPhotoUrl = () => {
     if (!photoInputUrl.trim()) return;
-    setPhotos(prev => [...prev, photoInputUrl.trim()]);
+    addPhoto(photoInputUrl.trim());
     setPhotoInputUrl('');
   };
 
@@ -229,24 +237,15 @@ export const TenantGamifiedOnboardingModal: React.FC<TenantGamifiedOnboardingMod
       const reader = new FileReader();
       reader.onload = (event) => {
         if (event.target?.result) {
-          setPhotos(prev => [...prev, event.target!.result as string]);
+          addPhoto(event.target.result as string);
         }
       };
       reader.readAsDataURL(file);
     });
   };
 
-  const handleRemovePhoto = (idx: number) => {
-    setPhotos(prev => prev.filter((_, i) => i !== idx));
-  };
-
   const handleAddSamplePhoto = () => {
-    const unused = SAMPLE_TENANT_PHOTOS.filter(p => !photos.includes(p));
-    if (unused.length > 0) {
-      setPhotos(prev => [...prev, unused[0]]);
-    } else {
-      setPhotos(prev => [...prev, SAMPLE_TENANT_PHOTOS[Math.floor(Math.random() * SAMPLE_TENANT_PHOTOS.length)]]);
-    }
+    addSamplePhotos(1);
   };
 
   // Top 5 essential amenities
@@ -278,8 +277,8 @@ export const TenantGamifiedOnboardingModal: React.FC<TenantGamifiedOnboardingMod
         setError('Indica una edad válida (mínimo 18 años).');
         return;
       }
-      if (photos.length < 3) {
-        setError(`Es obligatorio subir al menos 3 fotografías tuyas para verificar tu identidad y generar confianza ante los propietarios (actualmente tienes ${photos.length}/3).`);
+      if (!hasMinPhotos) {
+        setError(photoValidationErrorMessage);
         return;
       }
     } else if (step === 3) {
@@ -293,8 +292,8 @@ export const TenantGamifiedOnboardingModal: React.FC<TenantGamifiedOnboardingMod
 
   // Final submission
   const handleSubmit = async () => {
-    if (photos.length < 3) {
-      setError('Es obligatorio contar con al menos 3 fotografías en tu perfil.');
+    if (!hasMinPhotos) {
+      setError(photoValidationErrorMessage);
       setStep(1);
       return;
     }
@@ -510,9 +509,9 @@ export const TenantGamifiedOnboardingModal: React.FC<TenantGamifiedOnboardingMod
                     </p>
                   </div>
                   <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full ${
-                    photos.length >= 3 ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-rose-100 text-rose-800 border border-rose-300'
+                    hasMinPhotos ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-rose-100 text-rose-800 border border-rose-300'
                   }`}>
-                    {photos.length >= 3 ? `✓ ${photos.length} fotos listas` : `Faltan ${3 - photos.length} fotos`}
+                    {hasMinPhotos ? `✓ ${photoCount} fotos listas` : `Faltan ${photosRemaining} fotos`}
                   </span>
                 </div>
 
@@ -1559,7 +1558,7 @@ export const TenantGamifiedOnboardingModal: React.FC<TenantGamifiedOnboardingMod
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={loading || photos.length < 3}
+              disabled={loading || !hasMinPhotos}
               className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-[#1E1B4B] to-emerald-800 text-white font-bold text-xs hover:opacity-95 flex items-center gap-2 transition-all shadow-md disabled:opacity-50"
             >
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />

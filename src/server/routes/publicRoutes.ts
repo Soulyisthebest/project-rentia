@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { getSupabase } from '../supabase';
 import { landlordCodeRateLimiter } from '../middleware/rateLimit';
+import { logSupabaseWriteFailure } from '../db/database';
 
 export const publicRouter = Router();
 
@@ -31,8 +32,8 @@ publicRouter.get('/leases/:code', async (req: Request, res: Response) => {
       if (!error && data && data.length > 0) {
         row = data[0];
       }
-    } catch {
-      // Ignore RPC failure and proceed to direct query fallback
+    } catch (err: any) {
+      console.error('[SUPABASE_RPC_FAILED]', { route: 'GET /api/public/leases/:code (rpc lookup_lease_by_code)', error: err });
     }
 
     // 2. Direct query fallback: useful if the lease is already confirmed (RPC filters by pending)
@@ -66,8 +67,8 @@ publicRouter.get('/leases/:code', async (req: Request, res: Response) => {
             status: directLease.status || 'verified',
           };
         }
-      } catch {
-        // Continue
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/public/leases/:code (direct lookup fallback)', error: err });
       }
     }
 
@@ -159,8 +160,8 @@ publicRouter.post('/leases/:code/confirm', async (req: Request, res: Response) =
               return;
             }
           }
-        } catch {
-          // Ignore auth decode errors in public endpoint
+        } catch (err: any) {
+          console.warn('[PUBLIC_AUTH_DECODE_FAILED]', { route: 'POST /api/public/leases/:code/confirm', error: err?.message || err });
         }
       }
     }
@@ -249,8 +250,8 @@ publicRouter.post('/leases/:code/confirm', async (req: Request, res: Response) =
         if (currentProfile && typeof currentProfile.trust_score === 'number') {
           currentTrustScore = currentProfile.trust_score;
         }
-      } catch {
-        // Fallback to default
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'POST /api/public/leases/:code/confirm (get trust_score)', error: err });
       }
 
       const newTrustScore = Math.min(100, Math.max(0, currentTrustScore + points));
@@ -264,8 +265,14 @@ publicRouter.post('/leases/:code/confirm', async (req: Request, res: Response) =
             updated_at: new Date().toISOString(),
           })
           .eq('id', leaseData.user_id);
-      } catch (profErr) {
-        console.warn('Profile trust_score update warning in confirmation:', profErr);
+      } catch (profErr: any) {
+        logSupabaseWriteFailure({
+          route: 'POST /api/public/leases/:code/confirm (update profile trust_score)',
+          operation: 'update',
+          target_table: 'profiles',
+          payload: { user_id: leaseData.user_id, trust_score: newTrustScore },
+          error: profErr,
+        });
       }
       
       // 1. Existing reputation_events table (Keeps Passport trust score intact)
@@ -285,8 +292,14 @@ publicRouter.post('/leases/:code/confirm', async (req: Request, res: Response) =
             would_recommend,
           },
         });
-      } catch (repErr) {
-        console.warn('reputation_events insert warning in confirmation:', repErr);
+      } catch (repErr: any) {
+        logSupabaseWriteFailure({
+          route: 'POST /api/public/leases/:code/confirm (insert reputation_events)',
+          operation: 'insert',
+          target_table: 'reputation_events',
+          payload: { user_id: leaseData.user_id, lease_id: leaseData.id, score_delta: points },
+          error: repErr,
+        });
       }
 
       // 2. New rentia_points_events table (Activity & ranking system)
@@ -301,8 +314,14 @@ publicRouter.post('/leases/:code/confirm', async (req: Request, res: Response) =
             crypto_hash: cryptoHash,
           },
         });
-      } catch (ptsErr) {
-        console.warn('rentia_points_events insert warning:', ptsErr);
+      } catch (ptsErr: any) {
+        logSupabaseWriteFailure({
+          route: 'POST /api/public/leases/:code/confirm (insert rentia_points_events)',
+          operation: 'insert',
+          target_table: 'rentia_points_events',
+          payload: { user_id: leaseData.user_id, lease_id: leaseData.id },
+          error: ptsErr,
+        });
       }
     }
 
@@ -344,12 +363,12 @@ const handleOtpRequest = async (rawCode: string | undefined, phone: any, res: Re
           res.json({
             message: 'Código de verificación SMS enviado con éxito.',
             otpSent: true,
-            demoCode: rpcData.demo_otp || '482910',
+            demoCode: rpcData.demo_otp || undefined,
           });
           return;
         }
-      } catch {
-        // Fall through to memory store
+      } catch (err: any) {
+        console.error('[SUPABASE_RPC_FAILED]', { route: 'POST /api/public/request-otp (request_owner_otp)', error: err });
       }
     }
 
@@ -406,8 +425,8 @@ const handleOtpVerify = async (rawCode: string | undefined, phone: any, otp: any
           });
           return;
         }
-      } catch {
-        // Fall through
+      } catch (err: any) {
+        console.error('[SUPABASE_RPC_FAILED]', { route: 'POST /api/public/verify-otp (verify_owner_otp)', error: err });
       }
     }
 
@@ -417,16 +436,6 @@ const handleOtpVerify = async (rawCode: string | undefined, phone: any, otp: any
       record.verified = true;
       res.json({
         message: 'Número de teléfono verificado exitosamente.',
-        verified: true,
-      });
-      return;
-    }
-
-    // Accept demo fallback codes for seamless testing
-    if (cleanOtp === '482910' || cleanOtp === '123456') {
-      if (record) record.verified = true;
-      res.json({
-        message: 'Número de teléfono verificado con éxito (modo prueba).',
         verified: true,
       });
       return;

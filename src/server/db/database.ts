@@ -370,6 +370,17 @@ interface DatabaseSchema {
   notifications: RentiaNotificationRecord[];
   reports: ReportRecord[];
   kyc_verifications: KycVerificationRecord[];
+  pending_sync_writes?: PendingSyncWriteRecord[];
+}
+
+export interface PendingSyncWriteRecord {
+  id: string;
+  route: string;
+  operation: string;
+  target_table: string;
+  payload?: any;
+  error: string;
+  created_at: string;
 }
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -397,6 +408,7 @@ let databaseCache: DatabaseSchema = {
   notifications: [],
   reports: [],
   kyc_verifications: [],
+  pending_sync_writes: [],
 };
 
 // Load initial data from disk
@@ -430,6 +442,7 @@ function loadDatabase(): void {
         notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
         reports: Array.isArray(parsed.reports) ? parsed.reports : [],
         kyc_verifications: Array.isArray(parsed.kyc_verifications) ? parsed.kyc_verifications : [],
+        pending_sync_writes: Array.isArray(parsed.pending_sync_writes) ? parsed.pending_sync_writes : [],
       };
       // Ensure no passwords are held in memory
       databaseCache.users = databaseCache.users.map((u: any) => {
@@ -2444,4 +2457,70 @@ export const RentiaDB = {
     saveDatabase();
     return tProfile;
   },
+
+  /**
+   * Guarda un fallo de sincronización con Supabase para reintentos posteriores (P10.1)
+   */
+  recordPendingSyncWrite(data: {
+    route: string;
+    operation: string;
+    target_table: string;
+    payload?: any;
+    error: string;
+  }): PendingSyncWriteRecord {
+    const item: PendingSyncWriteRecord = {
+      id: `sync_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      route: data.route,
+      operation: data.operation,
+      target_table: data.target_table,
+      payload: data.payload,
+      error: data.error,
+      created_at: new Date().toISOString(),
+    };
+    if (!databaseCache.pending_sync_writes) {
+      databaseCache.pending_sync_writes = [];
+    }
+    databaseCache.pending_sync_writes.push(item);
+    // Keep last 1000 failed sync writes
+    if (databaseCache.pending_sync_writes.length > 1000) {
+      databaseCache.pending_sync_writes = databaseCache.pending_sync_writes.slice(-1000);
+    }
+    saveDatabase();
+    return item;
+  },
+
+  getPendingSyncWrites(): PendingSyncWriteRecord[] {
+    return databaseCache.pending_sync_writes || [];
+  },
 };
+
+/**
+ * Función unificada para registrar errores de escritura a Supabase de forma visible,
+ * estructurada y registrable en pending_sync_writes (Prioridad 10.1).
+ */
+export function logSupabaseWriteFailure(context: {
+  route: string;
+  operation: string;
+  target_table: string;
+  payload?: any;
+  error: any;
+}) {
+  const errMsg = context.error?.message || (typeof context.error === 'string' ? context.error : JSON.stringify(context.error));
+  console.error('[SUPABASE_WRITE_FAILED]', {
+    route: context.route,
+    operation: context.operation,
+    target_table: context.target_table,
+    error: errMsg,
+  });
+  try {
+    RentiaDB.recordPendingSyncWrite({
+      route: context.route,
+      operation: context.operation,
+      target_table: context.target_table,
+      payload: context.payload,
+      error: errMsg,
+    });
+  } catch {
+    // Non-blocking
+  }
+}

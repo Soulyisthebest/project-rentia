@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { getSupabase, getSupabaseAdmin, getSupabaseUrl, isSupabaseConfigured } from '../supabase';
 import { requireAdminAuth, optionalTenantAuth, AuthenticatedRequest } from '../middleware/auth';
-import { RentiaDB } from '../db/database';
+import { RentiaDB, logSupabaseWriteFailure } from '../db/database';
 import { getAllLocalUsers } from '../localAuthStore';
 
 export const adminRouter = Router();
@@ -87,7 +87,8 @@ adminRouter.get('/supabase/status', requireAdminAuth, async (req: AuthenticatedR
       if (url) {
         projectId = new URL(url).hostname.split('.')[0] || 'tu-proyecto';
       }
-    } catch {
+    } catch (err: any) {
+      console.warn('[ADMIN_PROJECT_ID_PARSE_FAILED]', { url, error: err?.message || err });
       projectId = url.replace('https://', '').split('.')[0] || 'tu-proyecto';
     }
     const totalReady = results.filter((r) => r.status === 'ready').length;
@@ -146,8 +147,8 @@ adminRouter.get('/stats', requireAdminAuth, async (req: AuthenticatedRequest, re
           totalTimeSpentMinutes: dbStats.totalTimeSpentMinutes,
         });
         return;
-      } catch {
-        // Fallback a las estadísticas reales de RentiaDB
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/admin/stats', error: err });
       }
     }
 
@@ -199,8 +200,8 @@ adminRouter.get('/ownership-verifications', async (req: AuthenticatedRequest, re
           res.json(verifs);
           return;
         }
-      } catch {
-        // Usar localVerifs
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/admin/ownership-verifications', error: err });
       }
     }
 
@@ -252,8 +253,14 @@ adminRouter.post('/ownership-verifications/:id/review', async (req: Authenticate
             })
             .eq('id', updated.listing_id);
         }
-      } catch {
-        // Ignore
+      } catch (err: any) {
+        logSupabaseWriteFailure({
+          route: 'POST /api/admin/ownership-verifications/:id/review',
+          operation: 'update',
+          target_table: 'property_ownership_verifications',
+          payload: { id, decision, adminId, rejectionReason, listing_id: updated?.listing_id },
+          error: err,
+        });
       }
     }
 
@@ -415,8 +422,8 @@ adminRouter.get('/users', async (req: AuthenticatedRequest, res: Response) => {
           res.json(Array.from(map.values()));
           return;
         }
-      } catch {
-        // Fallback a local
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/admin/users', error: err });
       }
     }
 
@@ -452,8 +459,14 @@ adminRouter.post('/users/:id/toggle-status', async (req: AuthenticatedRequest, r
           target_type: 'user',
           target_id: id,
         });
-      } catch {
-        // Ignore
+      } catch (err: any) {
+        logSupabaseWriteFailure({
+          route: 'POST /api/admin/users/:id/toggle-status',
+          operation: 'update',
+          target_table: 'profiles',
+          payload: { id, is_active: Boolean(isActive), adminId },
+          error: err,
+        });
       }
     }
 

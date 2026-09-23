@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { getSupabase } from '../supabase';
 import { requireTenantAuth, AuthenticatedRequest } from '../middleware/auth';
 import { getMsg, getReqLang } from '../utils/i18n';
+import { logSupabaseWriteFailure } from '../db/database';
 
 export const tenantRouter = Router();
 
@@ -365,8 +366,14 @@ tenantRouter.get('/export-data', async (req: AuthenticatedRequest, res: Response
         resource_id: tenantId,
         metadata: { timestamp: new Date().toISOString() },
       });
-    } catch {
-      // Non-blocking
+    } catch (err: any) {
+      logSupabaseWriteFailure({
+        route: 'GET /api/tenant/export-data',
+        operation: 'insert',
+        target_table: 'audit_logs',
+        payload: { user_id: tenantId, action: 'RGPD_DATA_EXPORTED' },
+        error: err,
+      });
     }
 
     res.setHeader('Content-Type', 'application/json');
@@ -405,8 +412,14 @@ tenantRouter.delete('/me', async (req: AuthenticatedRequest, res: Response) => {
         if (filePaths.length > 0) {
           try {
             await supabase.storage.from('contracts').remove(filePaths);
-          } catch (err) {
-            console.warn('Storage purge warning:', err);
+          } catch (err: any) {
+            logSupabaseWriteFailure({
+              route: 'DELETE /api/tenant/me (storage purge)',
+              operation: 'storage.remove',
+              target_table: 'contracts_storage',
+              payload: { tenantId, filePaths },
+              error: err,
+            });
           }
         }
       }
@@ -414,8 +427,14 @@ tenantRouter.delete('/me', async (req: AuthenticatedRequest, res: Response) => {
       // Supprimer les enregistrements de la table contracts
       try {
         await supabase.from('contracts').delete().in('lease_id', leaseIds);
-      } catch {
-        // Non-blocking
+      } catch (err: any) {
+        logSupabaseWriteFailure({
+          route: 'DELETE /api/tenant/me (delete contracts)',
+          operation: 'delete',
+          target_table: 'contracts',
+          payload: { tenantId, leaseIds },
+          error: err,
+        });
       }
     }
 
@@ -426,8 +445,14 @@ tenantRouter.delete('/me', async (req: AuthenticatedRequest, res: Response) => {
         .delete()
         .eq('user_id', tenantId)
         .neq('status', 'verified');
-    } catch {
-      // Non-blocking
+    } catch (err: any) {
+      logSupabaseWriteFailure({
+        route: 'DELETE /api/tenant/me (delete unverified leases)',
+        operation: 'delete',
+        target_table: 'leases',
+        payload: { tenantId },
+        error: err,
+      });
     }
 
     // 4. Anonymisation RGPD des données personnelles du profil (nom, email, tel, avatar)
@@ -464,16 +489,28 @@ tenantRouter.delete('/me', async (req: AuthenticatedRequest, res: Response) => {
     // 5. Si es propietario, eliminar también los inmuebles publicados
     try {
       await supabase.from('listings').delete().eq('landlord_id', tenantId);
-    } catch {
-      // Non-blocking
+    } catch (err: any) {
+      logSupabaseWriteFailure({
+        route: 'DELETE /api/tenant/me (delete landlord listings)',
+        operation: 'delete',
+        target_table: 'listings',
+        payload: { landlord_id: tenantId },
+        error: err,
+      });
     }
 
     // 6. Supprimer les paiements associés
     if (leaseIds.length > 0) {
       try {
         await supabase.from('payments').delete().in('lease_id', leaseIds);
-      } catch {
-        // Non-blocking
+      } catch (err: any) {
+        logSupabaseWriteFailure({
+          route: 'DELETE /api/tenant/me (delete payments)',
+          operation: 'delete',
+          target_table: 'payments',
+          payload: { tenantId, leaseIds },
+          error: err,
+        });
       }
     }
 
@@ -490,8 +527,14 @@ tenantRouter.delete('/me', async (req: AuthenticatedRequest, res: Response) => {
           leases_anonymized: true,
         },
       });
-    } catch {
-      // Non-blocking
+    } catch (err: any) {
+      logSupabaseWriteFailure({
+        route: 'DELETE /api/tenant/me (audit log deletion)',
+        operation: 'insert',
+        target_table: 'audit_logs',
+        payload: { user_id: tenantId, action: 'RGPD_ACCOUNT_ERASED_ANONYMIZED' },
+        error: err,
+      });
     }
 
     res.json({
@@ -532,8 +575,14 @@ tenantRouter.put('/deactivate', async (req: AuthenticatedRequest, res: Response)
       await supabase.auth.updateUser({
         data: { is_active: false, deactivated_at: nowIso },
       });
-    } catch {
-      // Non-blocking
+    } catch (err: any) {
+      logSupabaseWriteFailure({
+        route: 'PUT /api/tenant/deactivate (supabase.auth.updateUser)',
+        operation: 'auth.updateUser',
+        target_table: 'auth.users',
+        payload: { userId, is_active: false },
+        error: err,
+      });
     }
 
     // 3. Si es propietario, desactivar temporalmente sus anuncios del marketplace
@@ -542,8 +591,14 @@ tenantRouter.put('/deactivate', async (req: AuthenticatedRequest, res: Response)
         .from('listings')
         .update({ is_active: false, updated_at: nowIso })
         .eq('landlord_id', userId);
-    } catch {
-      // Non-blocking
+    } catch (err: any) {
+      logSupabaseWriteFailure({
+        route: 'PUT /api/tenant/deactivate (deactivate listings)',
+        operation: 'update',
+        target_table: 'listings',
+        payload: { landlord_id: userId, is_active: false },
+        error: err,
+      });
     }
 
     // 4. Enregistrer dans audit_logs
@@ -558,8 +613,14 @@ tenantRouter.put('/deactivate', async (req: AuthenticatedRequest, res: Response)
           reversible: true,
         },
       });
-    } catch {
-      // Non-blocking
+    } catch (err: any) {
+      logSupabaseWriteFailure({
+        route: 'PUT /api/tenant/deactivate (audit log deactivation)',
+        operation: 'insert',
+        target_table: 'audit_logs',
+        payload: { user_id: userId, action: 'ACCOUNT_DEACTIVATED_TEMPORARILY' },
+        error: err,
+      });
     }
 
     res.json({

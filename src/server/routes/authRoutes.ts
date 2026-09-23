@@ -11,7 +11,7 @@ import {
   recordEmailLoginFailure,
   recordEmailLoginSuccess,
 } from '../middleware/rateLimit';
-import { RentiaDB, parseUserAgent } from '../db/database';
+import { RentiaDB, parseUserAgent, logSupabaseWriteFailure } from '../db/database';
 import { requireTenantAuth, AuthenticatedRequest } from '../middleware/auth';
 
 export const authRouter = Router();
@@ -425,8 +425,14 @@ authRouter.post('/register', loginRateLimiter, async (req: Request, res: Respons
           user_agent: req.headers['user-agent'],
         },
       });
-    } catch {
-      // Non-blocking audit log
+    } catch (err: any) {
+      logSupabaseWriteFailure({
+        route: 'POST /api/auth/register (RGPD_CONSENT_GRANTED audit)',
+        operation: 'insert',
+        target_table: 'audit_logs',
+        payload: { user_id: userId, action: 'RGPD_CONSENT_GRANTED' },
+        error: err,
+      });
     }
 
     res.status(201).json({
@@ -860,8 +866,14 @@ authRouter.post('/login', loginRateLimiter, async (req: Request, res: Response) 
             has_pets: false,
             created_at: nowIso,
           });
-        } catch {
-          // ignore
+        } catch (err: any) {
+          logSupabaseWriteFailure({
+            route: 'POST /api/auth/login (upsert tenant_preferences)',
+            operation: 'upsert',
+            target_table: 'tenant_preferences',
+            payload: { tenant_id: user.id },
+            error: err,
+          });
         }
       }
     } else {
@@ -871,8 +883,14 @@ authRouter.post('/login', loginRateLimiter, async (req: Request, res: Response) 
           .from('profiles')
           .update({ updated_at: nowIso })
           .eq('id', user.id);
-      } catch {
-        // non-blocking
+      } catch (err: any) {
+        logSupabaseWriteFailure({
+          route: 'POST /api/auth/login (update profile last active)',
+          operation: 'update',
+          target_table: 'profiles',
+          payload: { id: user.id, updated_at: nowIso },
+          error: err,
+        });
       }
     }
 
@@ -981,8 +999,8 @@ authRouter.post('/logout', async (req: Request, res: Response) => {
     }
     const supabase = getSupabase();
     await supabase.auth.signOut();
-  } catch {
-    // Ignore signout errors
+  } catch (err: any) {
+    console.error('[SUPABASE_AUTH_FAILED]', { route: 'POST /api/auth/logout', error: err });
   }
   res.clearCookie('rentia_token');
   res.json({ message: 'Sesión cerrada con éxito.' });

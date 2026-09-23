@@ -4,7 +4,7 @@ import { getSupabase } from '../supabase';
 import { requireTenantAuth, optionalTenantAuth, AuthenticatedRequest } from '../middleware/auth';
 import { generateLeaseCode } from '../utils/codeGenerator';
 import { getMsg, getReqLang } from '../utils/i18n';
-import { RentiaDB } from '../db/database';
+import { RentiaDB, logSupabaseWriteFailure } from '../db/database';
 
 export const leaseRouter = Router();
 
@@ -270,8 +270,8 @@ leaseRouter.get('/', async (req: AuthenticatedRequest, res: Response) => {
         sbFormatted.forEach(sbf => map.set(sbf.id, sbf));
         finalLeases = Array.from(map.values());
       }
-    } catch {
-      // Usar finalLeases de RentiaDB
+    } catch (err: any) {
+      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/leases', error: err });
     }
 
     res.json({ leases: finalLeases });
@@ -361,8 +361,14 @@ leaseRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
         createdLease = sbLease;
         leaseId = sbLease.id;
       }
-    } catch (sbErr) {
-      console.warn('Supabase lease sync warning:', sbErr);
+    } catch (sbErr: any) {
+      logSupabaseWriteFailure({
+        route: 'POST /api/leases (insert lease)',
+        operation: 'insert',
+        target_table: 'leases',
+        payload: { id: savedInDb.id, tenant_id: tenantId, code },
+        error: sbErr,
+      });
     }
 
     // 2. Upload contract files to Supabase Storage (bucket "contracts") & save in contracts table
@@ -400,8 +406,14 @@ leaseRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
               });
             }
           }
-        } catch (storageErr) {
-          console.warn('Storage upload error for page:', storageErr);
+        } catch (storageErr: any) {
+          logSupabaseWriteFailure({
+            route: 'POST /api/leases (upload contract files)',
+            operation: 'upload/insert',
+            target_table: 'contracts',
+            payload: { tenantId, leaseId, pageIndex: i },
+            error: storageErr,
+          });
         }
       }
     }
@@ -417,8 +429,8 @@ leaseRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
       if (currentProfile && typeof currentProfile.trust_score === 'number') {
         currentTrustScore = currentProfile.trust_score;
       }
-    } catch {
-      // Fallback to default
+    } catch (err: any) {
+      console.error('[SUPABASE_READ_FAILED]', { route: 'POST /api/leases (get profile trust_score)', error: err });
     }
 
     // A simple self-declaration without third-party verification grants 0 points
@@ -439,8 +451,14 @@ leaseRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
           description: `Déclaration du bail ${code} (${createdLease.address}) — En attente de certification tiers (0 pt)`,
         },
       });
-    } catch (errRep) {
-      console.warn('Reputation event insert warning:', errRep);
+    } catch (errRep: any) {
+      logSupabaseWriteFailure({
+        route: 'POST /api/leases (insert reputation_events)',
+        operation: 'insert',
+        target_table: 'reputation_events',
+        payload: { user_id: tenantId, lease_id: leaseId, event_type: 'lease_created' },
+        error: errRep,
+      });
     }
 
     const lang = getReqLang(req);

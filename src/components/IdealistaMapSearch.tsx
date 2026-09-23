@@ -29,7 +29,7 @@ import L from 'leaflet';
 import { Language } from '../i18n/translations';
 import { PropertyDetailsModal } from './PropertyDetailsModal';
 import { ReportModal } from './ReportModal';
-import { TenantPhotoRequiredGate } from './TenantPhotoRequiredGate';
+import { TenantPhotoGate } from './TenantPhotoGate';
 import { SEED_LISTINGS } from '../data/seedListings';
 import { api } from '../api/client';
 import { TenantProfile } from '../types';
@@ -492,7 +492,7 @@ export const IdealistaMapSearch: React.FC<IdealistaMapSearchProps> = ({
   if (!isLandlord && (!tenant?.photos || tenant.photos.length < 3)) {
     return (
       <div className="w-full min-h-[75vh] flex items-center justify-center py-6 px-4">
-        <TenantPhotoRequiredGate
+        <TenantPhotoGate
           currentPhotos={tenant?.photos || []}
           currentUser={{ id: tenant?.id, email: tenant?.email, name: tenant?.fullName }}
           language={language}

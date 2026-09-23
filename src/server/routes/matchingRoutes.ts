@@ -3,7 +3,7 @@ import { calculateMatchRanking, recordRentiaPointsEvent } from '../rankingEngine
 import { getSupabase } from '../supabase';
 import { requireTenantAuth, AuthenticatedRequest } from '../middleware/auth';
 import { getMsg, getReqLang } from '../utils/i18n';
-import { RentiaDB } from '../db/database';
+import { RentiaDB, logSupabaseWriteFailure } from '../db/database';
 import { SEED_LISTINGS } from '../../data/seedListings';
 import { SEED_TENANTS } from '../../data/seedTenants';
 
@@ -146,8 +146,8 @@ matchingRouter.get('/listings', async (req: Request, res: Response) => {
         });
         dbListings = Array.from(map.values()) as any;
       }
-    } catch {
-      // Usar dbListings
+    } catch (err: any) {
+      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/listings', error: err });
     }
 
     const filtered = (dbListings || []).filter((l: any) => {
@@ -456,8 +456,8 @@ matchingRouter.get('/feed', async (req: Request, res: Response) => {
         });
         formattedListings = Array.from(map.values());
       }
-    } catch {
-      // Usar local formattedListings
+    } catch (err: any) {
+      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/listings-with-distance', error: err });
     }
 
     let feedItems = formattedListings;
@@ -897,8 +897,14 @@ matchingRouter.post('/swipe', async (req: Request, res: Response) => {
           }, {
             onConflict: 'listing_id,tenant_id'
           });
-      } catch {
-        // Ignore
+      } catch (err: any) {
+        logSupabaseWriteFailure({
+          route: 'POST /api/matching/swipe (upsert match - landlord like)',
+          operation: 'upsert',
+          target_table: 'matches',
+          payload: { id: savedMatch.id, listing_id: listingId, tenant_id: tenantId, landlord_id: landlordId },
+          error: err,
+        });
       }
     } else {
       // Caso 2: INQUILINO da LIKE -> Verifica si el propietario ya le había dado like
@@ -921,8 +927,8 @@ matchingRouter.post('/swipe', async (req: Request, res: Response) => {
             .eq('action', 'like')
             .maybeSingle();
           if (landlordSwipe) landlordAlreadyLiked = true;
-        } catch {
-          // Ignore
+        } catch (err: any) {
+          console.error('[SUPABASE_READ_FAILED]', { route: 'POST /api/matching/swipe (check landlord swipe)', error: err });
         }
       }
 
@@ -952,8 +958,14 @@ matchingRouter.post('/swipe', async (req: Request, res: Response) => {
             }, {
               onConflict: 'listing_id,tenant_id'
             });
-        } catch {
-          // Ignore
+        } catch (err: any) {
+          logSupabaseWriteFailure({
+            route: 'POST /api/matching/swipe (upsert match - mutual like)',
+            operation: 'upsert',
+            target_table: 'matches',
+            payload: { id: savedMatch.id, listing_id: listingId, tenant_id: actorId, landlord_id: targetUserId },
+            error: err,
+          });
         }
       } else {
         // Queda registrado como like unilateral pendiente del inquilino
@@ -1042,8 +1054,8 @@ matchingRouter.get('/my-likes', requireTenantAuth, async (req: AuthenticatedRequ
       if (!error && Array.isArray(data)) {
         myLikes = data;
       }
-    } catch {
-      // Continuar con fallback
+    } catch (err: any) {
+      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/my-likes (fetch swipes)', error: err });
     }
 
     if (myLikes.length === 0) {
@@ -1077,8 +1089,8 @@ matchingRouter.get('/my-likes', requireTenantAuth, async (req: AuthenticatedRequ
       (likedListings || []).forEach((l: any) => {
         listingsMap.set(l.id, l);
       });
-    } catch {
-      // Continuar con fallback
+    } catch (err: any) {
+      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/my-likes (fetch listings)', error: err });
     }
 
     // Complementar con RentiaDB y SEED_LISTINGS si falta alguno
@@ -1109,8 +1121,8 @@ matchingRouter.get('/my-likes', requireTenantAuth, async (req: AuthenticatedRequ
       (sbMatches || []).forEach((m: any) => {
         matchesMap.set(m.listing_id, m);
       });
-    } catch {
-      // Ignore
+    } catch (err: any) {
+      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/my-likes (fetch matches)', error: err });
     }
 
     const localMatches = RentiaDB.getMatches({ tenantId: userId });
@@ -1135,8 +1147,8 @@ matchingRouter.get('/my-likes', requireTenantAuth, async (req: AuthenticatedRequ
           landlordActionsMap.set(ls.listing_id, ls.action);
         }
       });
-    } catch {
-      // Ignore
+    } catch (err: any) {
+      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/my-likes (fetch landlord swipes)', error: err });
     }
 
     // 5. Construir respuesta detallada (deduplicando por listing_id para garantizar elementos únicos)
@@ -1220,8 +1232,8 @@ matchingRouter.get('/landlord/likes', async (req: Request, res: Response) => {
       if (!error && Array.isArray(data) && data.length > 0) {
         landlordLikes = data;
       }
-    } catch {
-      // Fallback a base local
+    } catch (err: any) {
+      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/landlord/likes', error: err });
     }
 
     if (landlordLikes.length === 0) {
@@ -1341,8 +1353,14 @@ matchingRouter.delete('/landlord/likes/:tenantId', async (req: Request, res: Res
         .delete()
         .eq('actor_id', landlordId)
         .eq('target_user_id', tenantId);
-    } catch {
-      // Ignore
+    } catch (err: any) {
+      logSupabaseWriteFailure({
+        route: 'DELETE /api/matching/landlord/likes/:tenantId',
+        operation: 'delete',
+        target_table: 'swipes',
+        payload: { actor_id: landlordId, target_user_id: tenantId },
+        error: err,
+      });
     }
 
     res.json({ success: true, message: 'Like eliminado con éxito' });
@@ -1562,8 +1580,8 @@ matchingRouter.get('/matches', async (req: Request, res: Response) => {
         if (userData?.user?.id) {
           userId = userData.user.id;
         }
-      } catch {
-        // Fallback token extraction
+      } catch (err: any) {
+        console.error('[SUPABASE_AUTH_FAILED]', { route: 'GET /api/matching/matches (auth.getUser)', error: err });
       }
       if (!userId && token.length > 5) {
         userId = token;
@@ -1651,8 +1669,8 @@ matchingRouter.get('/matches', async (req: Request, res: Response) => {
         res.json(Array.from(map.values()));
         return;
       }
-    } catch {
-      // Usar localMatches
+    } catch (err: any) {
+      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/matches', error: err });
     }
 
     res.json(Array.isArray(localMatches) ? localMatches : []);
@@ -1705,8 +1723,8 @@ matchingRouter.get('/messages/:matchId', async (req: Request, res: Response) => 
         });
         return;
       }
-    } catch {
-      // Usar localMessages
+    } catch (err: any) {
+      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/messages/:matchId', error: err });
     }
 
     res.json({
@@ -1758,8 +1776,14 @@ matchingRouter.post('/messages', async (req: Request, res: Response) => {
           sender_id: senderId,
           content: content.trim(),
         });
-    } catch {
-      // Ignore
+    } catch (err: any) {
+      logSupabaseWriteFailure({
+        route: 'POST /api/matching/messages',
+        operation: 'insert',
+        target_table: 'messages',
+        payload: { id: savedMessage.id, match_id: matchId, sender_id: senderId },
+        error: err,
+      });
     }
 
     res.json({
