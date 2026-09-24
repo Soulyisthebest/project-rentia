@@ -51,6 +51,15 @@ function resolveKey(): string {
 export const SUPABASE_URL = resolveUrl();
 export const SUPABASE_ANON_KEY = resolveKey();
 
+export const isClientSupabaseConfigured = (): boolean => {
+  return (
+    SUPABASE_URL !== 'https://placeholder.supabase.co' &&
+    SUPABASE_ANON_KEY !== 'placeholder_anon_key' &&
+    isValidHttpUrl(SUPABASE_URL) &&
+    !SUPABASE_URL.includes('TU_PROYECTO')
+  );
+};
+
 export const supabase = createClient(
   SUPABASE_URL,
   SUPABASE_ANON_KEY,

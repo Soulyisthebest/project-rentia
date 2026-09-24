@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Heart, Building2, MapPin, Euro, ArrowLeft, MessageSquare, Eye, Images } from 'lucide-react';
+import { Heart, Building2, MapPin, Euro, ArrowLeft, MessageSquare, Eye, Images, HeartOff, Check } from 'lucide-react';
 import { api } from '../api/client';
 import { Language } from '../i18n/translations';
 import { PropertyDetailsModal } from './PropertyDetailsModal';
@@ -20,6 +20,8 @@ export const MyLikesView: React.FC<MyLikesViewProps> = ({
   const [likes, setLikes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedListingItem, setSelectedListingItem] = useState<any | null>(null);
+  const [unlikingId, setUnlikingId] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchLikes = async () => {
@@ -44,8 +46,33 @@ export const MyLikesView: React.FC<MyLikesViewProps> = ({
     fetchLikes();
   }, []);
 
+  const handleUnlike = async (e: React.MouseEvent, listingId: string) => {
+    e.stopPropagation();
+    if (!listingId) return;
+
+    setUnlikingId(listingId);
+    try {
+      await api.matching.unlike(listingId);
+      setLikes((prev) => prev.filter((item) => (item.listing_id || item.listing?.id) !== listingId));
+      setToastMessage('Has quitado el like de este piso correctamente.');
+      setTimeout(() => setToastMessage(null), 3000);
+    } catch (err) {
+      console.error('Error unliking listing:', err);
+    } finally {
+      setUnlikingId(null);
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto px-4 py-8 space-y-6">
+      {/* Toast Feedback */}
+      {toastMessage && (
+        <div className="fixed top-20 right-6 z-50 bg-[#1E1B4B] text-white px-4 py-2.5 rounded-2xl shadow-xl flex items-center gap-2 text-xs font-bold animate-fade-in border border-emerald-400">
+          <Check className="w-4 h-4 text-emerald-400" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between bg-white p-5 rounded-3xl border border-stone-200 shadow-xs">
         <div className="flex items-center gap-3">
@@ -177,7 +204,18 @@ export const MyLikesView: React.FC<MyLikesViewProps> = ({
                         className="flex-1 py-1.5 px-3 bg-stone-100 hover:bg-indigo-50 hover:text-indigo-700 text-stone-700 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
                       >
                         <Eye className="w-3.5 h-3.5" />
-                        Ver detalles y fotos
+                        Ver fotos
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => handleUnlike(e, listing.id)}
+                        disabled={unlikingId === listing.id}
+                        className="py-1.5 px-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-xl text-xs font-bold flex items-center justify-center gap-1 transition-colors border border-rose-200"
+                        title="Quitar de mis likes"
+                      >
+                        <HeartOff className="w-3.5 h-3.5" />
+                        <span>{unlikingId === listing.id ? '...' : 'Quitar like'}</span>
                       </button>
 
                       {isMatched && onOpenChat && (

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Lock, Mail, User, Phone, LogIn, UserPlus, AlertCircle, Loader2, CheckCircle2, ShieldCheck, Building2, KeyRound, ArrowLeft } from 'lucide-react';
 import { Language, TRANSLATIONS } from '../i18n/translations';
 import { api, setAuthToken } from '../api/client';
-import { supabase } from '../lib/supabase';
+import { supabase, isClientSupabaseConfigured } from '../lib/supabase';
 import { UserRole } from '../types';
 
 interface AuthModalProps {
@@ -152,10 +152,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         if (loginRes.token) {
           setAuthToken(loginRes.token);
-          await supabase.auth.setSession({
-            access_token: loginRes.token,
-            refresh_token: loginRes.token,
-          }).catch(() => {});
+          if (isClientSupabaseConfigured() && !loginRes.token.startsWith('rentia_local_')) {
+            await supabase.auth.setSession({
+              access_token: loginRes.token,
+              refresh_token: loginRes.token,
+            }).catch(() => {});
+          }
         }
 
         onAuthSuccess(loginRes.tenant);
@@ -175,10 +177,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         if (res.token) {
           setAuthToken(res.token);
-          await supabase.auth.setSession({
-            access_token: res.token,
-            refresh_token: res.token,
-          }).catch(() => {});
+          if (isClientSupabaseConfigured() && !res.token.startsWith('rentia_local_')) {
+            await supabase.auth.setSession({
+              access_token: res.token,
+              refresh_token: res.token,
+            }).catch(() => {});
+          }
         }
 
         onAuthSuccess(res.tenant);

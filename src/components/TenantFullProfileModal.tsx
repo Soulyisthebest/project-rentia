@@ -103,7 +103,7 @@ export const TenantFullProfileModal: React.FC<TenantFullProfileModalProps> = ({
               Dossier Completo de Inquilino Certificado
             </span>
             <span className="px-2 py-0.5 rounded-full bg-indigo-50 border border-indigo-200 text-indigo-900 text-[10px] font-black">
-              Check Verde Oficial
+              Check Verde Verificado
             </span>
           </div>
 
@@ -187,7 +187,7 @@ export const TenantFullProfileModal: React.FC<TenantFullProfileModalProps> = ({
                   </span>
 
                   <span className="px-2.5 py-1 rounded-xl bg-white/10 text-stone-200 text-xs font-medium">
-                    {verifiedLeases} contratos de alquiler oficiales sin incidencias
+                    {verifiedLeases} contratos de alquiler verificados sin incidencias
                   </span>
                 </div>
               </div>
@@ -393,7 +393,7 @@ export const TenantFullProfileModal: React.FC<TenantFullProfileModalProps> = ({
             <div className="flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-indigo-700" />
               <h4 className="text-xs font-bold text-indigo-950">
-                Documentación Oficial Disponible en este Dossier
+                Documentación Verificada Disponible en este Dossier
               </h4>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-indigo-900 font-medium">

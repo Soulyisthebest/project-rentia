@@ -65,7 +65,7 @@ export const KycVerificationModal: React.FC<KycVerificationModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!dniFront) {
-      setError('Por favor sube la foto de tu DNI / documento oficial.');
+      setError('Por favor sube la foto de tu DNI / documento de identidad.');
       return;
     }
     if (!selfie) {
@@ -115,7 +115,7 @@ export const KycVerificationModal: React.FC<KycVerificationModalProps> = ({
               <ShieldCheck className="w-6 h-6 text-white" />
             </div>
             <div>
-              <h3 className="text-lg font-bold">Verificación Oficial de Identidad</h3>
+              <h3 className="text-lg font-bold">Verificación de Identidad</h3>
               <p className="text-xs text-emerald-100">
                 Obtén el Check Verde Verificado validado por administración
               </p>
@@ -140,7 +140,7 @@ export const KycVerificationModal: React.FC<KycVerificationModalProps> = ({
               <div>
                 <h4 className="font-bold text-base text-emerald-950">¡Tu perfil ya está verificado!</h4>
                 <p className="text-xs text-emerald-700 mt-0.5">
-                  Cuentas con el Check Verde oficial de Rentia. Tu identidad ha sido contrastada y validada por el equipo de administración.
+                  Cuentas con el Check Verde verificado de Rentia. Tu identidad ha sido contrastada y validada por el equipo de administración.
                 </p>
               </div>
             </div>

@@ -159,6 +159,19 @@ adminRouter.get('/stats', requireAdminAuth, async (req: AuthenticatedRequest, re
 });
 
 /**
+ * GET /api/admin/detailed-real-analytics
+ * Métricas 100% reales calculadas directamente de la base de datos sin datos inventados
+ */
+adminRouter.get('/detailed-real-analytics', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const analytics = RentiaDB.getRealAdminAnalytics();
+    res.json(analytics);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Error al obtener analítica real.' });
+  }
+});
+
+/**
  * GET /api/admin/sessions/summary
  * Métricas analíticas globales de logins y permanencia en la app
  */

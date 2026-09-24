@@ -120,7 +120,7 @@ moderationRouter.patch('/reports/:id/action', async (req: Request, res: Response
 
 /**
  * POST /api/kyc/submit
- * Subir selfie con DNI o DNI frontal para verificación oficial
+ * Subir selfie con DNI o DNI frontal para verificación de identidad
  */
 moderationRouter.post('/kyc/submit', optionalTenantAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {

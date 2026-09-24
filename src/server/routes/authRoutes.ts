@@ -997,10 +997,16 @@ authRouter.post('/logout', async (req: Request, res: Response) => {
     if (sessionId) {
       RentiaDB.endSession(sessionId);
     }
-    const supabase = getSupabase();
-    await supabase.auth.signOut();
-  } catch (err: any) {
-    console.error('[SUPABASE_AUTH_FAILED]', { route: 'POST /api/auth/logout', error: err });
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
+        await supabase.auth.signOut();
+      } catch (err: any) {
+        console.error('[SUPABASE_AUTH_FAILED]', { route: 'POST /api/auth/logout', error: err });
+      }
+    }
+  } catch (outerErr: any) {
+    console.error('[LOGOUT_ERROR]', outerErr);
   }
   res.clearCookie('rentia_token');
   res.json({ message: 'Sesión cerrada con éxito.' });

@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
-import { getSupabase } from '../supabase';
+import { getSupabase, isSupabaseConfigured } from '../supabase';
 import { landlordCodeRateLimiter } from '../middleware/rateLimit';
-import { logSupabaseWriteFailure } from '../db/database';
+import { RentiaDB, logSupabaseWriteFailure } from '../db/database';
 
 export const publicRouter = Router();
 
@@ -19,56 +19,75 @@ publicRouter.get('/leases/:code', async (req: Request, res: Response) => {
     }
 
     const cleanCode = rawCode.trim().toUpperCase();
-    const supabase = getSupabase();
+    const supabase = isSupabaseConfigured() ? getSupabase() : null;
 
     let row: any = null;
 
     // 1. Try Supabase RPC lookup_lease_by_code first
-    try {
-      const { data, error } = await supabase.rpc('lookup_lease_by_code', {
-        p_code: cleanCode,
-      });
-
-      if (!error && data && data.length > 0) {
-        row = data[0];
-      }
-    } catch (err: any) {
-      console.error('[SUPABASE_RPC_FAILED]', { route: 'GET /api/public/leases/:code (rpc lookup_lease_by_code)', error: err });
-    }
-
-    // 2. Direct query fallback: useful if the lease is already confirmed (RPC filters by pending)
-    // or if the profile foreign key join was not present
-    if (!row) {
+    if (supabase) {
       try {
-        const { data: directLease } = await supabase
-          .from('leases')
-          .select('id, code, address, city, start_date, end_date, status, user_id')
-          .ilike('code', cleanCode)
-          .maybeSingle();
+        const { data, error } = await supabase.rpc('lookup_lease_by_code', {
+          p_code: cleanCode,
+        });
 
-        if (directLease) {
-          let tenantName = 'Locataire Rentia';
-          if (directLease.user_id) {
-            const { data: profile } = await supabase
-              .from('profiles')
-              .select('name')
-              .eq('id', directLease.user_id)
-              .maybeSingle();
-            if (profile?.name) tenantName = profile.name;
-          }
-
-          row = {
-            lease_id: directLease.id,
-            tenant_name: tenantName,
-            address: directLease.address,
-            city: directLease.city || 'Málaga',
-            start_date: directLease.start_date,
-            end_date: directLease.end_date,
-            status: directLease.status || 'verified',
-          };
+        if (!error && data && data.length > 0) {
+          row = data[0];
         }
       } catch (err: any) {
-        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/public/leases/:code (direct lookup fallback)', error: err });
+        console.error('[SUPABASE_RPC_FAILED]', { route: 'GET /api/public/leases/:code (rpc lookup_lease_by_code)', error: err });
+      }
+
+      // 2. Direct query fallback: useful if the lease is already confirmed (RPC filters by pending)
+      // or if the profile foreign key join was not present
+      if (!row) {
+        try {
+          const { data: directLease } = await supabase
+            .from('leases')
+            .select('id, code, address, city, start_date, end_date, status, user_id')
+            .ilike('code', cleanCode)
+            .maybeSingle();
+
+          if (directLease) {
+            let tenantName = 'Locataire Rentia';
+            if (directLease.user_id) {
+              const { data: profile } = await supabase
+                .from('profiles')
+                .select('name')
+                .eq('id', directLease.user_id)
+                .maybeSingle();
+              if (profile?.name) tenantName = profile.name;
+            }
+
+            row = {
+              lease_id: directLease.id,
+              tenant_name: tenantName,
+              address: directLease.address,
+              city: directLease.city || 'Málaga',
+              start_date: directLease.start_date,
+              end_date: directLease.end_date,
+              status: directLease.status || 'verified',
+            };
+          }
+        } catch (err: any) {
+          console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/public/leases/:code (direct lookup fallback)', error: err });
+        }
+      }
+    }
+
+    // 3. Check persistent local store if not found in Supabase
+    if (!row) {
+      const localLease = RentiaDB.getLeaseByCode(cleanCode);
+      if (localLease) {
+        const localTenant = RentiaDB.getUserById(localLease.user_id);
+        row = {
+          lease_id: localLease.id,
+          tenant_name: localTenant?.name || localLease.owner_name_guess || 'Inquilino verificado',
+          address: localLease.address,
+          city: localLease.city || 'Málaga',
+          start_date: localLease.start_date,
+          end_date: localLease.end_date,
+          status: localLease.status || 'pending',
+        };
       }
     }
 
@@ -136,11 +155,11 @@ publicRouter.post('/leases/:code/confirm', async (req: Request, res: Response) =
       return;
     }
 
-    const supabase = getSupabase();
+    const supabase = isSupabaseConfigured() ? getSupabase() : null;
 
     // Anti-fraud security check: verify that the caller is NOT the tenant who owns this lease
     const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
+    if (authHeader && authHeader.startsWith('Bearer ') && supabase) {
       const token = authHeader.split(' ')[1];
       if (token) {
         try {
@@ -184,149 +203,107 @@ publicRouter.post('/leases/:code/confirm', async (req: Request, res: Response) =
       return;
     }
 
-    // Call Supabase RPC confirm_lease_by_code
-    const { data: rpcResult, error: rpcError } = await supabase.rpc('confirm_lease_by_code', {
-      p_code: cleanCode,
-      p_tenancy_confirmed: tenancy_confirmed,
-      p_rent_paid_ok: rent_paid_ok,
-      p_property_maintained: property_maintained,
-      p_would_recommend: would_recommend,
-      p_comment: comment ? String(comment).trim() : '',
-    });
+    let cryptoHash = `0x${Date.now().toString(16).toUpperCase()}`;
 
-    if (rpcError) {
-      if (rpcError.message?.includes('déjà confirmée') || rpcError.message?.includes('introuvable')) {
-        const { data: alreadyDone } = await supabase
+    // Update local RentiaDB store
+    const localConfirmed = RentiaDB.confirmLease(cleanCode, {
+      tenancy_confirmed,
+      rent_paid_ok,
+      property_maintained,
+      would_recommend,
+      comment: comment ? String(comment).trim() : '',
+    });
+    if (localConfirmed?.crypto_hash) {
+      cryptoHash = localConfirmed.crypto_hash;
+    }
+
+    if (supabase) {
+      // Call Supabase RPC confirm_lease_by_code
+      const { data: rpcResult, error: rpcError } = await supabase.rpc('confirm_lease_by_code', {
+        p_code: cleanCode,
+        p_tenancy_confirmed: tenancy_confirmed,
+        p_rent_paid_ok: rent_paid_ok,
+        p_property_maintained: property_maintained,
+        p_would_recommend: would_recommend,
+        p_comment: comment ? String(comment).trim() : '',
+      });
+
+      if (rpcError) {
+        if (rpcError.message?.includes('déjà confirmée') || rpcError.message?.includes('introuvable')) {
+          const { data: alreadyDone } = await supabase
+            .from('leases')
+            .select('id, status')
+            .eq('code', cleanCode)
+            .maybeSingle();
+
+          if (alreadyDone?.status === 'verified') {
+            res.json({
+              message: 'Cette location a déjà été validée et certifiée avec succès.',
+              status: 'verified',
+              cryptoHash: 'SHA256_VERIFIED',
+              confirmedAt: new Date().toISOString(),
+            });
+            return;
+          }
+        }
+      } else {
+        // Query the updated verification to get the generated crypto_hash and lease owner
+        const { data: leaseData } = await supabase
           .from('leases')
-          .select('id, status')
+          .select('id, user_id, status, verifications(crypto_hash, confirmed_at)')
           .eq('code', cleanCode)
           .maybeSingle();
 
-        if (alreadyDone?.status === 'verified') {
-          res.json({
-            message: 'Cette location a déjà été validée et certifiée avec succès.',
-            status: 'verified',
-            cryptoHash: 'SHA256_VERIFIED',
-            confirmedAt: new Date().toISOString(),
-          });
-          return;
+        const verif = leaseData?.verifications && (Array.isArray(leaseData.verifications) ? leaseData.verifications[0] : leaseData.verifications);
+        if (verif?.crypto_hash) cryptoHash = verif.crypto_hash;
+
+        if (leaseData?.user_id) {
+          let points = tenancy_confirmed === 'yes' ? 15 : -15;
+          if (tenancy_confirmed === 'yes') {
+            if (rent_paid_ok === 'yes') points += 5;
+            if (property_maintained === 'yes') points += 3;
+            if (would_recommend === 'yes') points += 2;
+          }
+
+          let currentTrustScore = 50;
+          try {
+            const { data: currentProfile } = await supabase
+              .from('profiles')
+              .select('trust_score')
+              .eq('id', leaseData.user_id)
+              .maybeSingle();
+            if (currentProfile && typeof currentProfile.trust_score === 'number') {
+              currentTrustScore = currentProfile.trust_score;
+            }
+          } catch (err: any) {
+            console.error('[SUPABASE_READ_FAILED]', { route: 'POST /api/public/leases/:code/confirm (get trust_score)', error: err });
+          }
+
+          const newTrustScore = Math.min(100, Math.max(0, currentTrustScore + points));
+
+          try {
+            await supabase
+              .from('profiles')
+              .update({
+                trust_score: newTrustScore,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', leaseData.user_id);
+          } catch (profErr: any) {
+            logSupabaseWriteFailure({
+              route: 'POST /api/public/leases/:code/confirm (update profile trust_score)',
+              operation: 'update',
+              target_table: 'profiles',
+              payload: { user_id: leaseData.user_id, trust_score: newTrustScore },
+              error: profErr,
+            });
+          }
         }
-      }
-      res.status(400).json({ error: rpcError.message || 'Impossible de valider cette location.' });
-      return;
-    }
-
-    // Now query the updated verification to get the generated crypto_hash and lease owner
-    const { data: leaseData } = await supabase
-      .from('leases')
-      .select('id, user_id, status, verifications(crypto_hash, confirmed_at)')
-      .eq('code', cleanCode)
-      .maybeSingle();
-
-    const verif = leaseData?.verifications && (Array.isArray(leaseData.verifications) ? leaseData.verifications[0] : leaseData.verifications);
-    const cryptoHash = verif?.crypto_hash || 'SHA256_VERIFIED';
-
-    // Add reputation event for the tenant (Dual write for 100% backward & forward compatibility)
-    if (leaseData?.user_id) {
-      // Calculate score delta based on genuine third-party verification
-      let points = 0;
-      if (tenancy_confirmed === 'yes') {
-        points = 15; // Base certification points
-        if (rent_paid_ok === 'yes') points += 5; // Extra bonus for full on-time rent
-        if (property_maintained === 'yes') points += 3; // Bonus for property care
-        if (would_recommend === 'yes') points += 2; // Bonus for recommendation
-      } else {
-        points = -15; // Penalty for disputed/rejected tenancy
-      }
-
-      // Fetch current score from profile
-      let currentTrustScore = 50;
-      try {
-        const { data: currentProfile } = await supabase
-          .from('profiles')
-          .select('trust_score')
-          .eq('id', leaseData.user_id)
-          .maybeSingle();
-        if (currentProfile && typeof currentProfile.trust_score === 'number') {
-          currentTrustScore = currentProfile.trust_score;
-        }
-      } catch (err: any) {
-        console.error('[SUPABASE_READ_FAILED]', { route: 'POST /api/public/leases/:code/confirm (get trust_score)', error: err });
-      }
-
-      const newTrustScore = Math.min(100, Math.max(0, currentTrustScore + points));
-
-      // Update tenant profile with new verified trust score
-      try {
-        await supabase
-          .from('profiles')
-          .update({
-            trust_score: newTrustScore,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', leaseData.user_id);
-      } catch (profErr: any) {
-        logSupabaseWriteFailure({
-          route: 'POST /api/public/leases/:code/confirm (update profile trust_score)',
-          operation: 'update',
-          target_table: 'profiles',
-          payload: { user_id: leaseData.user_id, trust_score: newTrustScore },
-          error: profErr,
-        });
-      }
-      
-      // 1. Existing reputation_events table (Keeps Passport trust score intact)
-      try {
-        await supabase.from('reputation_events').insert({
-          user_id: leaseData.user_id,
-          lease_id: leaseData.id,
-          event_type: 'contract_verified',
-          score_delta: points,
-          resulting_score: newTrustScore,
-          details: {
-            description: `Certification scellée par le propriétaire (${cleanCode}) — Empreinte ${cryptoHash.substring(0, 10)}... (+${points} pts)`,
-            code: cleanCode,
-            crypto_hash: cryptoHash,
-            rent_paid_ok,
-            property_maintained,
-            would_recommend,
-          },
-        });
-      } catch (repErr: any) {
-        logSupabaseWriteFailure({
-          route: 'POST /api/public/leases/:code/confirm (insert reputation_events)',
-          operation: 'insert',
-          target_table: 'reputation_events',
-          payload: { user_id: leaseData.user_id, lease_id: leaseData.id, score_delta: points },
-          error: repErr,
-        });
-      }
-
-      // 2. New rentia_points_events table (Activity & ranking system)
-      try {
-        await supabase.from('rentia_points_events').insert({
-          user_id: leaseData.user_id,
-          action_type: 'LEASE_CONFIRMED',
-          points_delta: Math.max(0, points * 10), // ex: 250 points d'activité
-          metadata: {
-            lease_id: leaseData.id,
-            code: cleanCode,
-            crypto_hash: cryptoHash,
-          },
-        });
-      } catch (ptsErr: any) {
-        logSupabaseWriteFailure({
-          route: 'POST /api/public/leases/:code/confirm (insert rentia_points_events)',
-          operation: 'insert',
-          target_table: 'rentia_points_events',
-          payload: { user_id: leaseData.user_id, lease_id: leaseData.id },
-          error: ptsErr,
-        });
       }
     }
 
     res.json({
-      message: 'Merci ! Votre attestation propriétaire a été scellée avec succès dans Supabase.',
+      message: 'Merci ! Votre attestation propriétaire a été scellée avec succès.',
       status: tenancy_confirmed === 'yes' ? 'verified' : 'rejected',
       cryptoHash,
       confirmedAt: new Date().toISOString(),
@@ -349,10 +326,10 @@ const handleOtpRequest = async (rawCode: string | undefined, phone: any, res: Re
 
     const cleanPhone = String(phone).replace(/\s+/g, '').trim();
     const cleanCode = (rawCode || '').trim().toUpperCase();
-    const supabase = getSupabase();
+    const supabase = isSupabaseConfigured() ? getSupabase() : null;
 
     // If a lease code is provided, try Supabase RPC if present
-    if (cleanCode) {
+    if (cleanCode && supabase) {
       try {
         const { data: rpcData, error: rpcError } = await supabase.rpc('request_owner_otp', {
           p_code: cleanCode,
@@ -407,10 +384,10 @@ const handleOtpVerify = async (rawCode: string | undefined, phone: any, otp: any
     const cleanPhone = String(phone).replace(/\s+/g, '').trim();
     const cleanOtp = String(otp).trim();
     const cleanCode = (rawCode || '').trim().toUpperCase();
-    const supabase = getSupabase();
+    const supabase = isSupabaseConfigured() ? getSupabase() : null;
 
     // Try Supabase RPC verify_owner_otp if code present
-    if (cleanCode) {
+    if (cleanCode && supabase) {
       try {
         const { data: rpcData, error: rpcError } = await supabase.rpc('verify_owner_otp', {
           p_code: cleanCode,

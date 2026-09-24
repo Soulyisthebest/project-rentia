@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence, useMotionValue, useTransform } from 'motion/react';
 import { 
   Heart, 
@@ -8,24 +8,28 @@ import {
   Home, 
   ShieldCheck, 
   ChevronUp, 
-  ChevronDown,
-  Info,
-  Calendar,
-  PawPrint,
-  BedDouble,
-  CheckCircle2,
-  Navigation as NavigationIcon,
-  Loader2,
-  RotateCcw
+  ChevronDown, 
+  Calendar, 
+  PawPrint, 
+  BedDouble, 
+  CheckCircle2, 
+  Navigation as NavigationIcon, 
+  Loader2, 
+  RotateCcw,
+  SlidersHorizontal,
+  Filter,
+  HeartOff,
+  Euro,
+  Check
 } from 'lucide-react';
 import { TenantProfile } from '../types';
 import { Language, TRANSLATIONS } from '../i18n/translations';
 import { api } from '../api/client';
 import { ANDALUSIA_CITIES } from './CreateListingModal';
 import { TenantPhotoGate } from './TenantPhotoGate';
-import { SEED_LISTINGS } from '../data/mockData';
+import { SEED_LISTINGS } from '../data/seedListings';
 
-// Coordonnées approximatives des 8 capitales provinciales d'Andalousie
+// Coordenadas aproximadas de las 8 capitales provinciales de Andalucía
 const ANDALUSIA_COORDINATES: Record<string, { lat: number; lng: number }> = {
   'Málaga': { lat: 36.7213, lng: -4.4214 },
   'Sevilla': { lat: 37.3891, lng: -5.9845 },
@@ -71,7 +75,17 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
   currentUserEmail,
 }) => {
   const t = TRANSLATIONS[language];
-  const [listings, setListings] = useState<any[]>([]);
+  const [rawListings, setRawListings] = useState<any[]>([]);
+  const [swipedListingIds, setSwipedListingIds] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem(`rentia_swiped_${tenant.id || 'demo'}`);
+      if (saved) {
+        return new Set(JSON.parse(saved));
+      }
+    } catch {}
+    return new Set();
+  });
+
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [swipeDirection, setSwipeDirection] = useState<'left' | 'right' | null>(null);
@@ -79,6 +93,7 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
   const [compatibility, setCompatibility] = useState<any | null>(null);
   const [showDetailsSheet, setShowDetailsSheet] = useState(false);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
+  const [showFilterModal, setShowFilterModal] = useState(false);
 
   // Andalusia City Filter and Geolocation State
   const [selectedCity, setSelectedCity] = useState<string>('all');
@@ -87,24 +102,57 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
   const [isLocating, setIsLocating] = useState(false);
   const [geoToast, setGeoToast] = useState<string | null>(null);
 
+  // Deterministic Filters State
+  const [maxPrice, setMaxPrice] = useState<number | null>(null);
+  const [minPrice, setMinPrice] = useState<number | null>(null);
+  const [minBedrooms, setMinBedrooms] = useState<number | null>(null);
+  const [propertyType, setPropertyType] = useState<string>('all');
+  const [petsAllowed, setPetsAllowed] = useState<boolean>(false);
+  const [furnishedOnly, setFurnishedOnly] = useState<boolean>(false);
+  const [elevatorOnly, setElevatorOnly] = useState<boolean>(false);
+
+  // "los pisos a los cuales se da like o se quitan ya no se pueden ver por inquilinos en explorar, except si le dan una opcion de buscar en propiedades que no se le ha hecho corazon"
+  const [hideInteracted, setHideInteracted] = useState<boolean>(true);
+
   // Motion values for swipe drag
   const x = useMotionValue(0);
   const rotate = useTransform(x, [-200, 200], [-12, 12]);
   const opacityLike = useTransform(x, [30, 150], [0, 1]);
   const opacityPass = useTransform(x, [-30, -150], [0, 1]);
 
+  // Load existing swiped IDs for this tenant
   useEffect(() => {
-    fetchListings(selectedCity === 'all' ? undefined : selectedCity, userCoords?.lat, userCoords?.lng, radiusKm);
-  }, [selectedCity, userCoords, radiusKm]);
+    const loadSwiped = async () => {
+      if (tenant.id) {
+        try {
+          const res = await api.matching.getSwipedIds(tenant.id);
+          if (res?.all && Array.isArray(res.all)) {
+            setSwipedListingIds(prev => {
+              const merged = new Set([...prev, ...res.all]);
+              try {
+                localStorage.setItem(`rentia_swiped_${tenant.id}`, JSON.stringify(Array.from(merged)));
+              } catch {}
+              return merged;
+            });
+          }
+        } catch (err) {
+          console.warn('Error fetching swiped IDs:', err);
+        }
+      }
+    };
+    loadSwiped();
+  }, [tenant.id]);
 
-  const fetchListings = async (city?: string, lat?: number, lng?: number, radius?: number) => {
+  useEffect(() => {
+    fetchListings();
+  }, []);
+
+  const fetchListings = async () => {
     try {
       setLoading(true);
       const data = await api.matching.getListings({
-        city: city && city !== 'all' ? city : undefined,
-        lat,
-        lng,
-        radius,
+        include_inactive: false,
+        status: 'available',
       });
       if (Array.isArray(data) && data.length > 0) {
         const seen = new Set<string>();
@@ -114,38 +162,147 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
           seen.add(l.id);
           return true;
         });
-        setListings(uniqueData);
+        setRawListings(uniqueData);
       } else {
-        const rawFallback = (city && city !== 'all')
-          ? SEED_LISTINGS.filter(l => l.city.toLowerCase() === city.toLowerCase())
-          : SEED_LISTINGS;
         const seen = new Set<string>();
-        const uniqueFallback = rawFallback.filter((l) => {
+        const uniqueFallback = SEED_LISTINGS.filter((l) => {
           if (!l?.id || seen.has(l.id)) return false;
-          if (l.is_active === false || l.status === 'rented' || l.status === 'inactive') return false;
           seen.add(l.id);
           return true;
         });
-        setListings(uniqueFallback);
+        setRawListings(uniqueFallback);
       }
-      setCurrentIndex(0);
     } catch (err) {
-      console.error('Erreur chargement annonces:', err);
-      const rawFallback = (city && city !== 'all')
-        ? SEED_LISTINGS.filter(l => l.city.toLowerCase() === city.toLowerCase())
-        : SEED_LISTINGS;
+      console.error('Error fetching listings:', err);
       const seen = new Set<string>();
-      const uniqueFallback = rawFallback.filter((l) => {
+      const uniqueFallback = SEED_LISTINGS.filter((l) => {
         if (!l?.id || seen.has(l.id)) return false;
-        if (l.is_active === false || l.status === 'rented' || l.status === 'inactive') return false;
         seen.add(l.id);
         return true;
       });
-      setListings(uniqueFallback);
+      setRawListings(uniqueFallback);
     } finally {
       setCurrentIndex(0);
       setLoading(false);
     }
+  };
+
+  // Deterministic Filtering Algorithm
+  const filteredListings = useMemo(() => {
+    return rawListings.filter((l) => {
+      if (!l || l.is_active === false || l.status === 'rented' || l.status === 'inactive') {
+        return false;
+      }
+
+      // Hide properties with like or quit unless the user specifically disabled hideInteracted
+      if (hideInteracted && swipedListingIds.has(l.id)) {
+        return false;
+      }
+
+      // City filter
+      if (selectedCity && selectedCity !== 'all') {
+        const lCity = (l.city || '').toLowerCase();
+        if (lCity !== selectedCity.toLowerCase()) {
+          return false;
+        }
+      }
+
+      // Price filter
+      const rent = Number(l.rent) || 0;
+      if (minPrice !== null && rent < minPrice) return false;
+      if (maxPrice !== null && rent > maxPrice) return false;
+
+      // Bedrooms filter
+      const beds = Number(l.bedrooms || l.rooms_count) || 1;
+      if (minBedrooms !== null && beds < minBedrooms) return false;
+
+      // Property type filter
+      if (propertyType && propertyType !== 'all') {
+        const pt = (l.property_type || '').toLowerCase();
+        const targetPt = propertyType.toLowerCase();
+        if (!pt.includes(targetPt) && !targetPt.includes(pt)) {
+          return false;
+        }
+      }
+
+      // Pets allowed filter
+      if (petsAllowed && !l.pets_allowed) return false;
+
+      // Furnished filter
+      if (furnishedOnly && !l.is_furnished && !l.furnished) return false;
+
+      // Elevator filter
+      if (elevatorOnly && !l.elevator) return false;
+
+      return true;
+    });
+  }, [
+    rawListings,
+    swipedListingIds,
+    hideInteracted,
+    selectedCity,
+    minPrice,
+    maxPrice,
+    minBedrooms,
+    propertyType,
+    petsAllowed,
+    furnishedOnly,
+    elevatorOnly,
+  ]);
+
+  // Active filters count
+  const activeFiltersCount = useMemo(() => {
+    let count = 0;
+    if (selectedCity !== 'all') count++;
+    if (minPrice !== null) count++;
+    if (maxPrice !== null) count++;
+    if (minBedrooms !== null) count++;
+    if (propertyType !== 'all') count++;
+    if (petsAllowed) count++;
+    if (furnishedOnly) count++;
+    if (elevatorOnly) count++;
+    if (!hideInteracted) count++;
+    return count;
+  }, [
+    selectedCity,
+    minPrice,
+    maxPrice,
+    minBedrooms,
+    propertyType,
+    petsAllowed,
+    furnishedOnly,
+    elevatorOnly,
+    hideInteracted,
+  ]);
+
+  // Reset index when filters change
+  useEffect(() => {
+    setCurrentIndex(0);
+  }, [
+    selectedCity,
+    minPrice,
+    maxPrice,
+    minBedrooms,
+    propertyType,
+    petsAllowed,
+    furnishedOnly,
+    elevatorOnly,
+    hideInteracted,
+  ]);
+
+  const handleResetFilters = () => {
+    setSelectedCity('all');
+    setMinPrice(null);
+    setMaxPrice(null);
+    setMinBedrooms(null);
+    setPropertyType('all');
+    setPetsAllowed(false);
+    setFurnishedOnly(false);
+    setElevatorOnly(false);
+    setHideInteracted(true);
+    setCurrentIndex(0);
+    setGeoToast('Filtros restablecidos');
+    setTimeout(() => setGeoToast(null), 2500);
   };
 
   const handleActivateGeolocation = () => {
@@ -162,7 +319,6 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
         const { latitude, longitude } = position.coords;
         setUserCoords({ lat: latitude, lng: longitude });
 
-        // Trouver la ville d'Andalousie la plus proche
         let closestCity = 'Málaga';
         let minDistance = Infinity;
 
@@ -188,7 +344,7 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
     );
   };
 
-  const currentListing = listings[currentIndex];
+  const currentListing = filteredListings[currentIndex];
 
   useEffect(() => {
     if (currentListing && tenant.id) {
@@ -202,14 +358,25 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
 
   const handleSwipe = async (direction: 'left' | 'right') => {
     if (!currentListing) return;
+    const listingIdToSwipe = currentListing.id;
     setSwipeDirection(direction);
     setShowDetailsSheet(false);
+
+    // Save swiped id immediately so it is excluded from future explore views
+    setSwipedListingIds((prev) => {
+      const updated = new Set(prev);
+      updated.add(listingIdToSwipe);
+      try {
+        localStorage.setItem(`rentia_swiped_${tenant.id || 'demo'}`, JSON.stringify(Array.from(updated)));
+      } catch {}
+      return updated;
+    });
 
     try {
       const res = await api.matching.swipe({
         actorId: tenant.id || 'anonymous_tenant',
         actorRole: 'tenant',
-        listingId: currentListing.id,
+        listingId: listingIdToSwipe,
         targetUserId: currentListing.landlord_id || 'landlord_01',
         action: direction === 'right' ? 'like' : 'pass',
       });
@@ -218,7 +385,7 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
         setMatchedListing(currentListing);
       }
     } catch (err) {
-      console.error('Erreur swipe:', err);
+      console.error('Error swipe:', err);
     }
 
     setTimeout(() => {
@@ -239,9 +406,10 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
     );
   }
 
-  // BARRE DE SÉLECTION GÉOGRAPHIQUE ANDALOUSIE (Toujours visible même en état vide)
-  const renderCitySelectorBar = () => (
-    <div className="w-full bg-white p-2.5 rounded-2xl border border-stone-200/90 shadow-2xs mb-2.5 flex items-center justify-between gap-2">
+  // TOP TOOLBAR CON FILTROS Y CONTADOR EN TIEMPO REAL
+  const renderFilterAndCityBar = () => (
+    <div className="w-full bg-white p-2.5 rounded-2xl border border-stone-200 shadow-2xs mb-2.5 flex items-center justify-between gap-2">
+      {/* City Selector */}
       <div className="flex items-center gap-1.5 flex-1 min-w-0">
         <MapPin className="w-3.5 h-3.5 text-stone-400 shrink-0" />
         <select
@@ -262,7 +430,7 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
         type="button"
         onClick={handleActivateGeolocation}
         disabled={isLocating}
-        className="px-2.5 py-1.5 rounded-xl bg-stone-100 hover:bg-stone-200 text-[#1E1B4B] text-[11px] font-bold transition-colors flex items-center gap-1 shrink-0 disabled:opacity-50"
+        className="px-2 py-1.5 rounded-xl bg-stone-100 hover:bg-stone-200 text-[#1E1B4B] text-[11px] font-bold transition-colors flex items-center gap-1 shrink-0 disabled:opacity-50"
         id="btn-activate-geolocation"
         title={t.geolocationBtn}
       >
@@ -271,13 +439,33 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
         ) : (
           <NavigationIcon className="w-3 h-3 text-[#0FA3A3]" />
         )}
-        <span>{isLocating ? t.locatingUser : t.geolocationBtn}</span>
+        <span className="hidden sm:inline">{isLocating ? t.locatingUser : t.geolocationBtn}</span>
+      </button>
+
+      {/* Open Filters Modal Button */}
+      <button
+        type="button"
+        onClick={() => setShowFilterModal(true)}
+        className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 ${
+          activeFiltersCount > 0
+            ? 'bg-[#1E1B4B] text-white shadow-xs'
+            : 'bg-stone-100 hover:bg-stone-200 text-[#1E1B4B]'
+        }`}
+        id="btn-open-filters"
+      >
+        <SlidersHorizontal className="w-3.5 h-3.5" />
+        <span>Filtros</span>
+        {activeFiltersCount > 0 && (
+          <span className="px-1.5 py-0.2 bg-amber-400 text-stone-900 rounded-full text-[10px] font-black">
+            {activeFiltersCount}
+          </span>
+        )}
       </button>
     </div>
   );
 
-  // ÉTAT VIDE HONNÊTE ET CLAIR LORSQU'AUCUN VRAI LOGEMENT N'EXISTE EN BASE
-  if (listings.length === 0) {
+  // ÉTAT VIDE EXACTO SI 0 PROPIEDADES COINCIDEN CON LOS FILTROS
+  if (filteredListings.length === 0) {
     return (
       <div className="max-w-md mx-auto relative px-2 flex flex-col items-center select-none min-h-[70vh]">
         {/* Toast */}
@@ -288,48 +476,101 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
           </div>
         )}
 
-        {/* City bar always accessible */}
-        {renderCitySelectorBar()}
+        {/* City and Filter bar always accessible */}
+        {renderFilterAndCityBar()}
 
-        <div className="w-full my-6 bg-white p-8 rounded-3xl border border-stone-200/80 text-center shadow-sm space-y-4">
-          <div className="w-14 h-14 bg-[#1E1B4B]/5 text-[#1E1B4B] rounded-2xl flex items-center justify-center mx-auto">
-            <Home className="w-7 h-7" />
+        <div className="w-full my-6 bg-white p-7 rounded-3xl border border-stone-200 text-center shadow-xs space-y-4">
+          <div className="w-14 h-14 bg-stone-100 text-stone-500 rounded-2xl flex items-center justify-center mx-auto">
+            <Filter className="w-7 h-7 text-stone-400" />
           </div>
           <div>
-            <h3 className="text-base font-bold text-[#1E1B4B] mb-1">
-              {t.noListingsTitle}
+            <div className="inline-block px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 font-bold text-xs mb-2 border border-rose-200">
+              0 propiedades encontradas con estos filtros
+            </div>
+            <h3 className="text-base font-black text-[#1E1B4B]">
+              Ningún inmueble coincide con tus criterios
             </h3>
-            <p className="text-xs text-stone-500 leading-relaxed max-w-sm mx-auto">
-              {t.noListingsDesc}
+            <p className="text-xs text-stone-500 leading-relaxed max-w-sm mx-auto mt-1">
+              El algoritmo ha evaluado la base de datos y no existen pisos que cumplan todos los filtros seleccionados a la vez. No se muestran viviendas aleatorias.
             </p>
           </div>
 
-          <div className="pt-2 space-y-2">
+          {/* Active filter tags list with clear buttons */}
+          <div className="flex flex-wrap gap-1.5 justify-center py-1">
             {selectedCity !== 'all' && (
+              <span className="px-2.5 py-1 bg-stone-100 text-stone-700 rounded-lg text-[11px] font-semibold flex items-center gap-1">
+                <span>{selectedCity}</span>
+                <button onClick={() => setSelectedCity('all')} className="hover:text-rose-600">✕</button>
+              </span>
+            )}
+            {maxPrice !== null && (
+              <span className="px-2.5 py-1 bg-stone-100 text-stone-700 rounded-lg text-[11px] font-semibold flex items-center gap-1">
+                <span>Máx {maxPrice}€</span>
+                <button onClick={() => setMaxPrice(null)} className="hover:text-rose-600">✕</button>
+              </span>
+            )}
+            {minBedrooms !== null && (
+              <span className="px-2.5 py-1 bg-stone-100 text-stone-700 rounded-lg text-[11px] font-semibold flex items-center gap-1">
+                <span>{minBedrooms}+ hab</span>
+                <button onClick={() => setMinBedrooms(null)} className="hover:text-rose-600">✕</button>
+              </span>
+            )}
+            {propertyType !== 'all' && (
+              <span className="px-2.5 py-1 bg-stone-100 text-stone-700 rounded-lg text-[11px] font-semibold flex items-center gap-1">
+                <span className="capitalize">{propertyType}</span>
+                <button onClick={() => setPropertyType('all')} className="hover:text-rose-600">✕</button>
+              </span>
+            )}
+            {petsAllowed && (
+              <span className="px-2.5 py-1 bg-stone-100 text-stone-700 rounded-lg text-[11px] font-semibold flex items-center gap-1">
+                <span>Mascotas</span>
+                <button onClick={() => setPetsAllowed(false)} className="hover:text-rose-600">✕</button>
+              </span>
+            )}
+            {hideInteracted && (
+              <span className="px-2.5 py-1 bg-stone-100 text-stone-700 rounded-lg text-[11px] font-semibold flex items-center gap-1">
+                <span>Sin corazón (ocultar vistas)</span>
+              </span>
+            )}
+          </div>
+
+          <div className="pt-2 space-y-2">
+            <button
+              onClick={handleResetFilters}
+              className="w-full py-2.5 bg-[#1E1B4B] hover:bg-[#28235C] text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-2"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Restablecer todos los filtros</span>
+            </button>
+
+            {hideInteracted && swipedListingIds.size > 0 && (
               <button
-                onClick={() => setSelectedCity('all')}
-                className="w-full py-3 bg-[#1E1B4B] hover:bg-[#28235C] text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-2"
+                onClick={() => setHideInteracted(false)}
+                className="w-full py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-800 rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-2 border border-rose-200"
               >
-                <MapPin className="w-4 h-4 text-[#D97706]" />
-                <span>Ver todas las ciudades de Andalucía</span>
+                <Heart className="w-3.5 h-3.5 fill-rose-500 text-rose-500" />
+                <span>Buscar también en propiedades con corazón ({swipedListingIds.size} vistas)</span>
               </button>
             )}
 
             <button
-              onClick={fetchListings}
-              className="w-full py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-2"
+              onClick={() => setShowFilterModal(true)}
+              className="w-full py-2 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-2"
             >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>{t.refreshListingsBtn}</span>
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              <span>Ajustar filtros detallados</span>
             </button>
           </div>
         </div>
+
+        {/* Filter Drawer / Modal */}
+        {renderFilterModal()}
       </div>
     );
   }
 
-  // Écran quand tous les logements ont été vus
-  if (currentIndex >= listings.length || !currentListing) {
+  // Écran quand tous les logements filtrés ont été vus
+  if (currentIndex >= filteredListings.length || !currentListing) {
     return (
       <div className="max-w-md mx-auto relative px-2 flex flex-col items-center select-none min-h-[70vh]">
         {/* Toast */}
@@ -340,39 +581,50 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
           </div>
         )}
 
-        {/* City bar always accessible */}
-        {renderCitySelectorBar()}
+        {/* City and Filter bar always accessible */}
+        {renderFilterAndCityBar()}
 
         <div className="w-full my-6 bg-white p-8 rounded-3xl border border-stone-200/80 text-center shadow-sm space-y-4">
           <div className="w-14 h-14 bg-[#1E1B4B]/5 text-[#1E1B4B] rounded-2xl flex items-center justify-center mx-auto">
-            <CheckCircle2 className="w-7 h-7" />
+            <CheckCircle2 className="w-7 h-7 text-emerald-600" />
           </div>
           <h3 className="text-base font-bold text-[#1E1B4B]">{t.upToDateTitle}</h3>
           <p className="text-xs text-stone-500 leading-relaxed">
-            {t.upToDateDesc}
+            Has revisado todas las propiedades disponibles que cumplen con tus filtros actuales.
           </p>
           <div className="space-y-2">
             <button
               onClick={() => setCurrentIndex(0)}
               className="w-full py-3 bg-[#1E1B4B] text-white rounded-xl text-xs font-bold hover:bg-[#28235C] transition-colors flex items-center justify-center gap-2"
             >
-              <RotateCcw className="w-4 h-4 text-[#D97706]" />
-              <span>{t.reviewListingsBtn}</span>
+              <RotateCcw className="w-4 h-4 text-amber-400" />
+              <span>Volver a revisar desde el principio</span>
             </button>
-            {selectedCity !== 'all' && (
+
+            {hideInteracted && (
               <button
                 onClick={() => {
-                  setSelectedCity('all');
+                  setHideInteracted(false);
                   setCurrentIndex(0);
                 }}
-                className="w-full py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-1.5"
+                className="w-full py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-2"
               >
-                <MapPin className="w-3.5 h-3.5" />
-                <span>Explorar todas las provincias</span>
+                <Heart className="w-3.5 h-3.5 text-rose-500" />
+                <span>Mostrar también pisos con like o descartados</span>
               </button>
             )}
+
+            <button
+              onClick={handleResetFilters}
+              className="w-full py-2.5 bg-stone-50 hover:bg-stone-100 text-stone-600 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-2"
+            >
+              <span>Restablecer filtros de búsqueda</span>
+            </button>
           </div>
         </div>
+
+        {/* Filter Drawer / Modal */}
+        {renderFilterModal()}
       </div>
     );
   }
@@ -399,6 +651,209 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
     );
   }
 
+  function renderFilterModal() {
+    if (!showFilterModal) return null;
+
+    return (
+      <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
+        <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-stone-200 space-y-4 max-h-[90vh] overflow-y-auto">
+          {/* Modal Header */}
+          <div className="flex items-center justify-between pb-3 border-b border-stone-100">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-[#1E1B4B] text-white flex items-center justify-center">
+                <SlidersHorizontal className="w-4 h-4 text-amber-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-[#1E1B4B]">Filtros de Búsqueda</h3>
+                <p className="text-[11px] text-stone-400">Personaliza exactamente los inmuebles que deseas ver</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowFilterModal(false)}
+              className="w-7 h-7 rounded-full bg-stone-100 hover:bg-stone-200 text-stone-500 flex items-center justify-center"
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* Ocultar pisos con like o descarte (Requisito clave) */}
+          <div className="bg-rose-50/70 p-3.5 rounded-2xl border border-rose-200/80 space-y-1.5">
+            <label className="flex items-center justify-between cursor-pointer select-none">
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-1.5 font-bold text-xs text-rose-950">
+                  <HeartOff className="w-3.5 h-3.5 text-rose-600" />
+                  <span>Ocultar pisos con like o quitados</span>
+                </div>
+                <p className="text-[10px] text-rose-700 leading-snug">
+                  {hideInteracted 
+                    ? 'Activado: Solo se muestran pisos nuevos sin corazón ni descartes.' 
+                    : 'Desactivado: Mostrando todos los pisos incluidos los que ya diste corazón.'}
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={hideInteracted}
+                onChange={(e) => setHideInteracted(e.target.checked)}
+                className="w-4 h-4 accent-[#1E1B4B] rounded cursor-pointer ml-3 shrink-0"
+              />
+            </label>
+          </div>
+
+          {/* Ciudad */}
+          <div className="space-y-1">
+            <label className="block text-xs font-bold text-stone-700">Ciudad de Andalucía</label>
+            <select
+              value={selectedCity}
+              onChange={(e) => setSelectedCity(e.target.value)}
+              className="w-full text-xs font-bold text-[#1E1B4B] p-2.5 rounded-xl border border-stone-200 bg-stone-50 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            >
+              <option value="all">Todas las capitales de Andalucía</option>
+              {ANDALUSIA_CITIES.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Rango de Precio */}
+          <div className="space-y-1.5">
+            <label className="block text-xs font-bold text-stone-700">Precio Máximo de Renta (€/mes)</label>
+            <div className="grid grid-cols-3 gap-1.5">
+              {[null, 700, 900, 1100, 1300, 1600].map((val) => (
+                <button
+                  key={val === null ? 'any' : val}
+                  type="button"
+                  onClick={() => setMaxPrice(val)}
+                  className={`py-1.5 px-2 rounded-xl text-xs font-bold transition-all border ${
+                    maxPrice === val
+                      ? 'bg-[#1E1B4B] text-white border-[#1E1B4B]'
+                      : 'bg-stone-50 hover:bg-stone-100 text-stone-700 border-stone-200'
+                  }`}
+                >
+                  {val === null ? 'Sin tope' : `Hasta ${val}€`}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Dormitorios Mínimos */}
+          <div className="space-y-1.5">
+            <label className="block text-xs font-bold text-stone-700">Habitaciones mínimas</label>
+            <div className="grid grid-cols-5 gap-1.5">
+              {[null, 1, 2, 3, 4].map((num) => (
+                <button
+                  key={num === null ? 'any' : num}
+                  type="button"
+                  onClick={() => setMinBedrooms(num)}
+                  className={`py-1.5 px-2 rounded-xl text-xs font-bold transition-all border ${
+                    minBedrooms === num
+                      ? 'bg-[#1E1B4B] text-white border-[#1E1B4B]'
+                      : 'bg-stone-50 hover:bg-stone-100 text-stone-700 border-stone-200'
+                  }`}
+                >
+                  {num === null ? 'Todas' : `${num}+`}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Tipo de Inmueble */}
+          <div className="space-y-1.5">
+            <label className="block text-xs font-bold text-stone-700">Tipo de Propiedad</label>
+            <div className="grid grid-cols-3 gap-1.5">
+              {[
+                { label: 'Todos', val: 'all' },
+                { label: 'Piso', val: 'piso' },
+                { label: 'Apartamento', val: 'apartamento' },
+                { label: 'Ático', val: 'ático' },
+                { label: 'Estudio', val: 'estudio' },
+                { label: 'Casa', val: 'casa' },
+              ].map((item) => (
+                <button
+                  key={item.val}
+                  type="button"
+                  onClick={() => setPropertyType(item.val)}
+                  className={`py-1.5 px-2 rounded-xl text-xs font-bold transition-all border ${
+                    propertyType === item.val
+                      ? 'bg-[#1E1B4B] text-white border-[#1E1B4B]'
+                      : 'bg-stone-50 hover:bg-stone-100 text-stone-700 border-stone-200'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Características Adicionales */}
+          <div className="space-y-2 pt-1 border-t border-stone-100">
+            <label className="block text-xs font-bold text-stone-700">Equipamiento</label>
+            <div className="space-y-1.5 text-xs">
+              <label className="flex items-center justify-between p-2 rounded-xl bg-stone-50 border border-stone-200 cursor-pointer">
+                <span className="font-semibold text-stone-700">Admite mascotas</span>
+                <input
+                  type="checkbox"
+                  checked={petsAllowed}
+                  onChange={(e) => setPetsAllowed(e.target.checked)}
+                  className="w-4 h-4 accent-[#1E1B4B] rounded cursor-pointer"
+                />
+              </label>
+
+              <label className="flex items-center justify-between p-2 rounded-xl bg-stone-50 border border-stone-200 cursor-pointer">
+                <span className="font-semibold text-stone-700">Solo totalmente amueblados</span>
+                <input
+                  type="checkbox"
+                  checked={furnishedOnly}
+                  onChange={(e) => setFurnishedOnly(e.target.checked)}
+                  className="w-4 h-4 accent-[#1E1B4B] rounded cursor-pointer"
+                />
+              </label>
+
+              <label className="flex items-center justify-between p-2 rounded-xl bg-stone-50 border border-stone-200 cursor-pointer">
+                <span className="font-semibold text-stone-700">Con ascensor</span>
+                <input
+                  type="checkbox"
+                  checked={elevatorOnly}
+                  onChange={(e) => setElevatorOnly(e.target.checked)}
+                  className="w-4 h-4 accent-[#1E1B4B] rounded cursor-pointer"
+                />
+              </label>
+            </div>
+          </div>
+
+          {/* Actions with Live Exact Count */}
+          <div className="pt-2 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleResetFilters}
+              className="py-2.5 px-3 bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-bold rounded-xl transition-colors"
+            >
+              Restablecer
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowFilterModal(false)}
+              className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-2 ${
+                filteredListings.length > 0
+                  ? 'bg-[#1E1B4B] hover:bg-[#28235C] text-white'
+                  : 'bg-stone-300 text-stone-600'
+              }`}
+            >
+              {filteredListings.length > 0 ? (
+                <>
+                  <Check className="w-4 h-4 text-emerald-400" />
+                  <span>Ver {filteredListings.length} {filteredListings.length === 1 ? 'propiedad' : 'propiedades'}</span>
+                </>
+              ) : (
+                <span>0 propiedades con estos filtros</span>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-md mx-auto relative px-2 flex flex-col items-center select-none min-h-[82vh] justify-between">
       
@@ -411,13 +866,29 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
       )}
 
       {/* Andalusia Filter & Geolocation Bar */}
-      {renderCitySelectorBar()}
+      {renderFilterAndCityBar()}
 
-      {/* Top quick action bar with Matching Quiz trigger */}
+      {/* Top quick action bar with Matching Quiz trigger & Active Filter summary */}
       <div className="w-full flex items-center justify-between pb-2 px-1 gap-2">
-        <span className="text-[11px] font-bold text-stone-500 uppercase tracking-wider">
-          {listings.length} {t.availableListingsCount}
-        </span>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[11px] font-bold text-stone-500 uppercase tracking-wider">
+            {filteredListings.length} {filteredListings.length === 1 ? 'propiedad' : 'propiedades'}
+          </span>
+          {hideInteracted && (
+            <span className="text-[10px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
+              Sin corazón
+            </span>
+          )}
+          {activeFiltersCount > 0 && (
+            <button
+              onClick={handleResetFilters}
+              className="text-[10px] font-bold text-indigo-700 hover:underline"
+            >
+              (Limpiar filtros)
+            </button>
+          )}
+        </div>
+
         {onOpenQuiz && (
           <button
             onClick={onOpenQuiz}
@@ -518,7 +989,7 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
               )}
             </div>
 
-            {/* Bottom Minimalist Card Overlay (Essential Info only) */}
+            {/* Bottom Minimalist Card Overlay */}
             <div 
               onClick={() => setShowDetailsSheet(true)}
               className="relative z-10 p-5 text-white cursor-pointer bg-gradient-to-t from-black via-black/80 to-transparent"
@@ -533,7 +1004,7 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
               </div>
 
               <p className="text-xs text-stone-300 line-clamp-1 mb-2.5">
-                {currentListing.surface_sqm || 65} m² • {currentListing.rooms_count || 2} {t.roomsCount} • {currentListing.furnished ? t.furnished : t.unfurnished}
+                {currentListing.surface_sqm || 65} m² • {currentListing.rooms_count || currentListing.bedrooms || 2} hab. • {currentListing.furnished || currentListing.is_furnished ? t.furnished : t.unfurnished}
               </p>
 
               {/* Tap for more details hint */}
@@ -581,7 +1052,7 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
                 <div className="grid grid-cols-3 gap-2 mb-4">
                   <div className="p-2.5 bg-white rounded-xl border border-stone-200/80 text-center">
                     <BedDouble className="w-4 h-4 text-[#1E1B4B] mx-auto mb-1" />
-                    <span className="text-xs font-bold block">{currentListing.rooms_count} {t.roomsCount}</span>
+                    <span className="text-xs font-bold block">{currentListing.rooms_count || currentListing.bedrooms || 2} hab.</span>
                     <span className="text-[10px] text-stone-400">{currentListing.surface_sqm || 65} m²</span>
                   </div>
 
@@ -593,106 +1064,69 @@ export const SwipeDiscovery: React.FC<SwipeDiscoveryProps> = ({
 
                   <div className="p-2.5 bg-white rounded-xl border border-stone-200/80 text-center">
                     <PawPrint className="w-4 h-4 text-[#1E1B4B] mx-auto mb-1" />
-                    <span className="text-xs font-bold block">{t.petsAllowed.split(' ')[0]}</span>
+                    <span className="text-xs font-bold block">Mascotas</span>
                     <span className="text-[10px] text-stone-400 block">{currentListing.pets_allowed ? t.petsAllowed : t.petsForbidden}</span>
                   </div>
                 </div>
-
-                {/* Certified Landlord info */}
-                <div className="p-3 bg-white rounded-2xl border border-stone-200/80 flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-9 h-9 rounded-full bg-[#1E1B4B] text-white font-bold text-xs flex items-center justify-center">
-                      {currentListing.landlord_name?.charAt(0) || 'P'}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-1">
-                        <span className="text-xs font-bold text-[#1E1B4B]">{currentListing.landlord_name || t.certifiedLandlord}</span>
-                        <ShieldCheck className="w-3.5 h-3.5 text-[#D97706]" />
-                      </div>
-                      <span className="text-[10px] text-stone-500">{t.certifiedProofLock}</span>
-                    </div>
-                  </div>
-                  <span className="text-[10px] font-bold text-[#1E1B4B] bg-[#FAF9F6] px-2 py-1 rounded-lg border border-stone-200">
-                    {t.directLandlord}
-                  </span>
-                </div>
               </div>
 
-              <button
-                onClick={() => setShowDetailsSheet(false)}
-                className="w-full py-2.5 bg-stone-200/80 hover:bg-stone-300 text-[#1E1B4B] font-bold text-xs rounded-xl transition-colors"
-              >
-                {t.closeDetails}
-              </button>
+              {/* Action buttons inside sheet */}
+              <div className="flex items-center justify-between gap-4 pt-4 border-t border-stone-200">
+                <button
+                  onClick={() => handleSwipe('left')}
+                  className="flex-1 py-3 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2"
+                >
+                  <X className="w-4 h-4" />
+                  <span>Descartar</span>
+                </button>
+                <button
+                  onClick={() => handleSwipe('right')}
+                  className="flex-1 py-3 bg-[#1E1B4B] hover:bg-[#28235C] text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-2"
+                >
+                  <Heart className="w-4 h-4 fill-rose-500 text-rose-500" />
+                  <span>Dar Like</span>
+                </button>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
       </div>
 
-      {/* DISCREET BOTTOM CONTROLS (Pass / Like) */}
-      <div className="w-full max-w-xs flex items-center justify-center gap-8 py-3 mt-1">
+      {/* BOTTOM FLOATING CONTROLS */}
+      <div className="w-full flex items-center justify-center gap-6 py-4">
         {/* Pass Button */}
         <button
-          type="button"
           onClick={() => handleSwipe('left')}
-          className="w-14 h-14 rounded-full bg-white border border-stone-200/80 flex items-center justify-center text-stone-400 hover:text-stone-700 hover:bg-stone-50 transition-all shadow-sm active:scale-95"
+          className="w-14 h-14 rounded-full bg-white border border-stone-200 text-stone-500 hover:text-stone-800 hover:bg-stone-100 flex items-center justify-center shadow-md transition-all hover:scale-105 active:scale-95"
           id="btn-swipe-pass"
-          title={t.passAction}
+          title="Descartar propiedad"
         >
           <X className="w-6 h-6" />
         </button>
 
-        {/* Primary Action: Soft Amber Like Button */}
+        {/* Info/Details Button */}
         <button
-          type="button"
-          onClick={() => handleSwipe('right')}
-          className="w-16 h-16 rounded-full bg-[#D97706] hover:bg-[#B45309] text-white flex items-center justify-center transition-all shadow-md active:scale-95"
-          id="btn-swipe-like"
-          title={t.likeAction}
+          onClick={() => setShowDetailsSheet(!showDetailsSheet)}
+          className="w-11 h-11 rounded-full bg-white border border-stone-200 text-[#1E1B4B] hover:bg-stone-100 flex items-center justify-center shadow-sm transition-all hover:scale-105 active:scale-95"
+          id="btn-swipe-info"
+          title="Ver detalles del inmueble"
         >
-          <Heart className="w-7 h-7 fill-current" />
+          <ChevronUp className="w-5 h-5" />
+        </button>
+
+        {/* Like Button */}
+        <button
+          onClick={() => handleSwipe('right')}
+          className="w-14 h-14 rounded-full bg-gradient-to-tr from-[#1E1B4B] to-[#28235C] text-white hover:from-[#28235C] hover:to-[#3730A3] flex items-center justify-center shadow-lg transition-all hover:scale-105 active:scale-95 border border-white/20"
+          id="btn-swipe-like"
+          title="Dar like al piso"
+        >
+          <Heart className="w-7 h-7 fill-rose-400 text-rose-400" />
         </button>
       </div>
 
-      {/* BILATERAL MATCH MODAL */}
-      {matchedListing && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-[#FAF9F6] rounded-3xl p-6 max-w-sm w-full text-center shadow-2xl border border-stone-200 animate-scale-up">
-            <div className="w-14 h-14 bg-[#D97706]/10 text-[#D97706] rounded-2xl flex items-center justify-center mx-auto mb-3">
-              <Heart className="w-7 h-7 fill-current" />
-            </div>
-
-            <span className="text-[11px] font-bold text-[#D97706] uppercase tracking-wider">{t.reciprocalMatchTitle}</span>
-            <h3 className="text-lg font-black text-[#1E1B4B] mt-1 mb-2">{matchedListing.title}</h3>
-            
-            <p className="text-xs text-stone-600 mb-4 leading-relaxed">
-              {t.reciprocalMatchDesc}
-            </p>
-
-            <div className="space-y-2">
-              {onNavigateToChat && (
-                <button
-                  onClick={() => {
-                    setMatchedListing(null);
-                    onNavigateToChat();
-                  }}
-                  className="w-full py-3 bg-[#1E1B4B] hover:bg-[#28235C] text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-2"
-                >
-                  <Sparkles className="w-4 h-4 text-[#D97706]" />
-                  <span>{t.openChatBtn}</span>
-                </button>
-              )}
-              <button
-                onClick={() => setMatchedListing(null)}
-                className="w-full py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-semibold transition-all"
-              >
-                {t.continueDiscoveryBtn}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
+      {/* Filter Modal */}
+      {renderFilterModal()}
     </div>
   );
 };

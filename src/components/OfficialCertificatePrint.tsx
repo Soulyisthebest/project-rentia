@@ -54,7 +54,7 @@ export const OfficialCertificatePrint: React.FC<OfficialCertificatePrintProps> =
         </button>
       </div>
 
-      {/* The Printable Official Certificate Document */}
+      {/* The Printable Certificate Document */}
       <div className="bg-white text-[#1C3B3A] p-6 sm:p-8 rounded-2xl shadow-xs border border-[#0FA3A3]/20 relative overflow-hidden print:border-none print:shadow-none print:p-4">
         
         {/* Top Header of Document */}

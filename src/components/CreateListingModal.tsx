@@ -303,7 +303,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
                 <span className="text-xs font-bold text-indigo-950">Verificación de Titularidad (Escritura / Nota Simple)</span>
               </div>
               <p className="text-[11px] text-indigo-900/80">
-                Aporta la referencia catastral o enlace a la Nota Simple para recibir el distintivo oficial de <strong>Inmueble Verificado</strong>.
+                Aporta la referencia catastral o enlace a la Nota Simple para recibir el distintivo de <strong>Inmueble Verificado</strong>.
               </p>
               <div className="grid grid-cols-2 gap-2">
                 <div>

@@ -65,11 +65,11 @@ export const PassportCard: React.FC<PassportCardProps> = ({
                 {tenant.fullName || t.guestUser}
               </h2>
 
-              {/* Check Verde oficial verificado por admin */}
+              {/* Check Verde verificado por admin */}
               {isVerified ? (
                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-800 text-[10px] font-black" title="Perfil verificado por la administración con DNI cotejado">
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Check Verde Oficial</span>
+                  <span>Check Verde Verificado</span>
                 </span>
               ) : isPendingKyc ? (
                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-50 border border-amber-300 text-amber-800 text-[10px] font-bold">

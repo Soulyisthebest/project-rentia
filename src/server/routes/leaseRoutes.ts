@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { GoogleGenAI, Type } from '@google/genai';
-import { getSupabase } from '../supabase';
+import { getSupabase, isSupabaseConfigured } from '../supabase';
 import { requireTenantAuth, optionalTenantAuth, AuthenticatedRequest } from '../middleware/auth';
 import { generateLeaseCode } from '../utils/codeGenerator';
 import { getMsg, getReqLang } from '../utils/i18n';
@@ -194,7 +194,7 @@ leaseRouter.use(requireTenantAuth);
 leaseRouter.get('/', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const tenantId = req.tenant!.id;
-    const supabase = getSupabase();
+    const supabase = isSupabaseConfigured() ? getSupabase() : null;
 
     // 1. Obtener contratos reales de la base de datos persistente
     const localLeases = RentiaDB.getLeases({ userId: tenantId });
@@ -222,56 +222,58 @@ leaseRouter.get('/', async (req: AuthenticatedRequest, res: Response) => {
       verification: null,
     }));
 
-    try {
-      const { data: leases, error } = await supabase
-        .from('leases')
-        .select(`
-          id,
-          tenant_id,
-          landlord_name,
-          address,
-          monthly_rent,
-          start_date,
-          end_date,
-          status,
-          is_locked,
-          created_at
-        `)
-        .eq('tenant_id', tenantId)
-        .order('created_at', { ascending: false });
+    if (supabase) {
+      try {
+        const { data: leases, error } = await supabase
+          .from('leases')
+          .select(`
+            id,
+            tenant_id,
+            landlord_name,
+            address,
+            monthly_rent,
+            start_date,
+            end_date,
+            status,
+            is_locked,
+            created_at
+          `)
+          .eq('tenant_id', tenantId)
+          .order('created_at', { ascending: false });
 
-      if (!error && leases && leases.length > 0) {
-        const sbFormatted = leases.map(l => {
-          return {
-            id: l.id,
-            code: `RENTIA-${l.id.substring(0, 6).toUpperCase()}`,
-            address: l.address,
-            city: 'Málaga',
-            postalCode: '',
-            country: 'España',
-            currency: '€',
-            propertyType: 'Appartement',
-            rent: Number(l.monthly_rent) || 0,
-            deposit: (Number(l.monthly_rent) || 0) * 2,
-            startDate: l.start_date,
-            endDate: l.end_date || 'Actual',
-            ownerNameGuess: l.landlord_name,
-            ownerContact: '',
-            status: l.status,
-            confidenceScore: 0.96,
-            contractPagesCount: 1,
-            createdAt: l.created_at,
-            verification: null,
-          };
-        });
+        if (!error && leases && leases.length > 0) {
+          const sbFormatted = leases.map(l => {
+            return {
+              id: l.id,
+              code: `RENTIA-${l.id.substring(0, 6).toUpperCase()}`,
+              address: l.address,
+              city: 'Málaga',
+              postalCode: '',
+              country: 'España',
+              currency: '€',
+              propertyType: 'Appartement',
+              rent: Number(l.monthly_rent) || 0,
+              deposit: (Number(l.monthly_rent) || 0) * 2,
+              startDate: l.start_date,
+              endDate: l.end_date || 'Actual',
+              ownerNameGuess: l.landlord_name,
+              ownerContact: '',
+              status: l.status,
+              confidenceScore: 0.96,
+              contractPagesCount: 1,
+              createdAt: l.created_at,
+              verification: null,
+            };
+          });
 
-        const map = new Map();
-        finalLeases.forEach(fl => map.set(fl.id, fl));
-        sbFormatted.forEach(sbf => map.set(sbf.id, sbf));
-        finalLeases = Array.from(map.values());
+          const map = new Map();
+          finalLeases.forEach(fl => map.set(fl.id, fl));
+          sbFormatted.forEach(sbf => map.set(sbf.id, sbf));
+          finalLeases = Array.from(map.values());
+        }
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/leases', error: err });
       }
-    } catch (err: any) {
-      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/leases', error: err });
     }
 
     res.json({ leases: finalLeases });
@@ -335,40 +337,42 @@ leaseRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
       location_details: location_details || null,
     });
 
-    const supabase = getSupabase(req.supabaseToken);
+    const supabase = isSupabaseConfigured() ? getSupabase(req.supabaseToken) : null;
 
     // 2. Intentar replicar en Supabase en segundo plano si está disponible
     let leaseId = savedInDb.id;
     let createdLease: any = savedInDb;
-    try {
-      const { data: sbLease } = await supabase
-        .from('leases')
-        .insert({
-          id: savedInDb.id,
-          tenant_id: tenantId,
-          landlord_name: String(owner_name_guess || 'Propietario').trim(),
-          address: String(address).trim() + (city ? `, ${String(city).trim()}` : ''),
-          monthly_rent: Number(rent) || 0,
-          start_date: String(start_date).trim().split('T')[0],
-          end_date: end_date && end_date !== 'Actual' ? String(end_date).trim().split('T')[0] : null,
-          status: 'pending',
-          is_locked: false,
-        })
-        .select()
-        .maybeSingle();
+    if (supabase) {
+      try {
+        const { data: sbLease } = await supabase
+          .from('leases')
+          .insert({
+            id: savedInDb.id,
+            tenant_id: tenantId,
+            landlord_name: String(owner_name_guess || 'Propietario').trim(),
+            address: String(address).trim() + (city ? `, ${String(city).trim()}` : ''),
+            monthly_rent: Number(rent) || 0,
+            start_date: String(start_date).trim().split('T')[0],
+            end_date: end_date && end_date !== 'Actual' ? String(end_date).trim().split('T')[0] : null,
+            status: 'pending',
+            is_locked: false,
+          })
+          .select()
+          .maybeSingle();
 
-      if (sbLease?.id) {
-        createdLease = sbLease;
-        leaseId = sbLease.id;
+        if (sbLease?.id) {
+          createdLease = sbLease;
+          leaseId = sbLease.id;
+        }
+      } catch (sbErr: any) {
+        logSupabaseWriteFailure({
+          route: 'POST /api/leases (insert lease)',
+          operation: 'insert',
+          target_table: 'leases',
+          payload: { id: savedInDb.id, tenant_id: tenantId, code },
+          error: sbErr,
+        });
       }
-    } catch (sbErr: any) {
-      logSupabaseWriteFailure({
-        route: 'POST /api/leases (insert lease)',
-        operation: 'insert',
-        target_table: 'leases',
-        payload: { id: savedInDb.id, tenant_id: tenantId, code },
-        error: sbErr,
-      });
     }
 
     // 2. Upload contract files to Supabase Storage (bucket "contracts") & save in contracts table
@@ -497,37 +501,41 @@ leaseRouter.delete('/:id', async (req: AuthenticatedRequest, res: Response) => {
     const tenantId = req.tenant!.id;
     const { id } = req.params;
     const lang = getReqLang(req);
-    const supabase = getSupabase();
+    const supabase = isSupabaseConfigured() ? getSupabase() : null;
 
-    // Check lease
-    const { data: lease, error: fetchErr } = await supabase
-      .from('leases')
-      .select('id, status')
-      .eq('id', id)
-      .eq('user_id', tenantId)
-      .maybeSingle();
-
-    if (!lease) {
-      res.status(404).json({ error: getMsg('LEASE_NOT_FOUND', lang) });
-      return;
+    // Check lease in local DB first
+    const localLease = RentiaDB.getLeaseById(id);
+    if (localLease) {
+      if (localLease.status === 'verified') {
+        res.status(400).json({ error: getMsg('LEASE_VERIFIED_LOCK', lang) });
+        return;
+      }
+      RentiaDB.deleteLease(id);
     }
 
-    if (lease.status === 'verified') {
-      res.status(400).json({
-        error: getMsg('LEASE_VERIFIED_LOCK', lang),
-      });
-      return;
-    }
+    if (supabase) {
+      // Check lease in Supabase
+      const { data: lease } = await supabase
+        .from('leases')
+        .select('id, status')
+        .eq('id', id)
+        .eq('user_id', tenantId)
+        .maybeSingle();
 
-    const { error: deleteErr } = await supabase
-      .from('leases')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', tenantId);
+      if (lease) {
+        if (lease.status === 'verified') {
+          res.status(400).json({
+            error: getMsg('LEASE_VERIFIED_LOCK', lang),
+          });
+          return;
+        }
 
-    if (deleteErr) {
-      res.status(400).json({ error: deleteErr.message });
-      return;
+        await supabase
+          .from('leases')
+          .delete()
+          .eq('id', id)
+          .eq('user_id', tenantId);
+      }
     }
 
     res.json({ message: getMsg('LEASE_DELETED', lang) });

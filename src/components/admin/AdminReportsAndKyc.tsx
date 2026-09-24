@@ -124,7 +124,7 @@ export const AdminReportsAndKyc: React.FC<AdminReportsAndKycProps> = ({
       );
       setSuccessMsg(
         decision === 'approved'
-          ? '¡Cuenta validada! Se ha otorgado el Check Verde oficial.'
+          ? '¡Cuenta validada! Se ha otorgado el Check Verde verificado.'
           : 'Verificación rechazada.'
       );
       setTimeout(() => setSuccessMsg(null), 4000);

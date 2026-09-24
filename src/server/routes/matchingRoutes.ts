@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { calculateMatchRanking, recordRentiaPointsEvent } from '../rankingEngine';
-import { getSupabase } from '../supabase';
+import { getSupabase, isSupabaseConfigured } from '../supabase';
 import { requireTenantAuth, AuthenticatedRequest } from '../middleware/auth';
 import { getMsg, getReqLang } from '../utils/i18n';
 import { RentiaDB, logSupabaseWriteFailure } from '../db/database';
@@ -112,45 +112,71 @@ matchingRouter.get('/listings', async (req: Request, res: Response) => {
     const userLng = req.query.lng ? parseFloat(String(req.query.lng)) : null;
     const maxRadiusKm = req.query.radius ? parseFloat(String(req.query.radius)) : 50;
 
+    // Filtros deterministas adicionales
+    const minPrice = req.query.min_price ? parseFloat(String(req.query.min_price)) : null;
+    const maxPrice = req.query.max_price ? parseFloat(String(req.query.max_price)) : null;
+    const minBedrooms = req.query.bedrooms ? parseInt(String(req.query.bedrooms), 10) : null;
+    const propertyType = req.query.property_type ? String(req.query.property_type).trim().toLowerCase() : null;
+    const petsAllowed = req.query.pets_allowed === 'true';
+    const isFurnished = req.query.is_furnished === 'true';
+    const hasElevator = req.query.elevator === 'true';
+
+    // Exclusión de interactuados / corazón
+    const actorId = req.query.actor_id ? String(req.query.actor_id).trim() : (req.query.exclude_interacted_by ? String(req.query.exclude_interacted_by).trim() : null);
+    const hideInteracted = req.query.hide_interacted === 'true' || req.query.unhearted_only === 'true';
+
+    let excludedIds = new Set<string>();
+    if (actorId && hideInteracted) {
+      const swiped = RentiaDB.getSwipedListingIds(actorId);
+      swiped.all.forEach((id) => excludedIds.add(id));
+    }
+
     // 1. Obtener inmuebles registrados en la base de datos real
     let dbListings = RentiaDB.getListings({
       city: cityFilter && cityFilter !== 'all' ? cityFilter : undefined,
     });
 
-    // 2. Intentar combinar con Supabase si está disponible
-    try {
-      const supabase = getSupabase();
-      let query = supabase
-        .from('listings')
-        .select('*, profiles:landlord_id(id, name, avatar_url, trust_score, is_active, role)')
-        .order('created_at', { ascending: false });
+    // 2. Intentar combinar con Supabase si está disponible y configurado
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
+        let query = supabase
+          .from('listings')
+          .select('*, profiles:landlord_id(id, name, avatar_url, trust_score, is_active, role)')
+          .order('created_at', { ascending: false });
 
-      if (!includeInactive) {
-        query = query.eq('is_active', true);
-      }
+        if (!includeInactive) {
+          query = query.eq('is_active', true);
+        }
 
-      if (cityFilter && cityFilter !== 'all') {
-        query = query.eq('city', cityFilter);
-      }
+        if (cityFilter && cityFilter !== 'all') {
+          query = query.eq('city', cityFilter);
+        }
 
-      const { data: sbListings } = await query;
-      if (sbListings && sbListings.length > 0) {
-        const map = new Map<string, any>();
-        dbListings.forEach(l => map.set(l.id, l));
-        sbListings.forEach((sl: any) => {
-          map.set(sl.id, {
-            ...sl,
-            landlord_name: (sl.profiles as any)?.name || sl.landlord_name,
-            landlord_avatar: (sl.profiles as any)?.avatar_url || sl.landlord_avatar,
+        const { data: sbListings } = await query;
+        if (sbListings && sbListings.length > 0) {
+          const map = new Map<string, any>();
+          dbListings.forEach(l => map.set(l.id, l));
+          sbListings.forEach((sl: any) => {
+            map.set(sl.id, {
+              ...sl,
+              landlord_name: (sl.profiles as any)?.name || sl.landlord_name,
+              landlord_avatar: (sl.profiles as any)?.avatar_url || sl.landlord_avatar,
+            });
           });
-        });
-        dbListings = Array.from(map.values()) as any;
+          dbListings = Array.from(map.values()) as any;
+        }
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/listings', error: err });
       }
-    } catch (err: any) {
-      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/listings', error: err });
     }
 
     const filtered = (dbListings || []).filter((l: any) => {
+      // Excluir pisos interactuados (con corazón o descartados)
+      if (excludedIds.has(l.id)) {
+        return false;
+      }
+
       // Filtro de estado (disponibles, alquiladas, desactivadas, todas)
       if (statusFilter === 'available' && (l.is_active === false || l.status === 'rented' || l.status === 'inactive')) {
         return false;
@@ -167,6 +193,45 @@ matchingRouter.get('/listings', async (req: Request, res: Response) => {
       if (!includeTest && (l.is_test === true || l.title?.includes('[TEST]') || l.title?.includes('(Test)'))) {
         return false;
       }
+
+      // Filtros deterministas de precio
+      const rent = Number(l.rent) || 0;
+      if (minPrice !== null && !isNaN(minPrice) && rent < minPrice) {
+        return false;
+      }
+      if (maxPrice !== null && !isNaN(maxPrice) && rent > maxPrice) {
+        return false;
+      }
+
+      // Filtro de dormitorios
+      const beds = Number(l.bedrooms) || 1;
+      if (minBedrooms !== null && !isNaN(minBedrooms) && beds < minBedrooms) {
+        return false;
+      }
+
+      // Filtro de tipo de propiedad
+      if (propertyType && propertyType !== 'all') {
+        const pType = (l.property_type || '').toLowerCase();
+        if (!pType.includes(propertyType) && !propertyType.includes(pType)) {
+          return false;
+        }
+      }
+
+      // Filtro de mascotas
+      if (petsAllowed && !l.pets_allowed) {
+        return false;
+      }
+
+      // Filtro de amueblado
+      if (isFurnished && !l.is_furnished) {
+        return false;
+      }
+
+      // Filtro de ascensor
+      if (hasElevator && !l.elevator) {
+        return false;
+      }
+
       return true;
     });
 
@@ -238,7 +303,7 @@ matchingRouter.post('/listings/:id/toggle', async (req: Request, res: Response) 
  */
 matchingRouter.get('/feed', async (req: Request, res: Response) => {
   try {
-    const supabase = getSupabase();
+    const supabase = isSupabaseConfigured() ? getSupabase() : null;
 
     // 1. Extraer autenticación opcional o requerida
     const authHeader = req.headers.authorization;
@@ -247,17 +312,25 @@ matchingRouter.get('/feed', async (req: Request, res: Response) => {
 
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.substring(7).trim();
-      const { data: userData } = await supabase.auth.getUser(token);
-      if (userData?.user?.id) {
-        userId = userData.user.id;
-        const { data: userProfile } = await supabase
-          .from('profiles')
-          .select('role')
-          .eq('id', userId)
-          .maybeSingle();
-        if (userProfile?.role === 'landlord') {
-          userRole = 'landlord';
-        }
+      const localUser = RentiaDB.getUserById(token) || RentiaDB.getUserByEmail(token);
+      if (localUser) {
+        userId = localUser.id;
+        userRole = localUser.role === 'landlord' ? 'landlord' : 'tenant';
+      } else if (supabase) {
+        try {
+          const { data: userData } = await supabase.auth.getUser(token);
+          if (userData?.user?.id) {
+            userId = userData.user.id;
+            const { data: userProfile } = await supabase
+              .from('profiles')
+              .select('role')
+              .eq('id', userId)
+              .maybeSingle();
+            if (userProfile?.role === 'landlord') {
+              userRole = 'landlord';
+            }
+          }
+        } catch {}
       }
     }
 
@@ -268,84 +341,88 @@ matchingRouter.get('/feed', async (req: Request, res: Response) => {
 
     // 2. CASO A: EL USUARIO ES PROPIETARIO -> FEED EXCLUSIVO DE CANDIDATOS INQUILINOS
     if (userRole === 'landlord') {
-      let { data: profiles, error } = await supabase
-        .from('profiles')
-        .select('id, name, email, phone, role, is_active')
-        .is('deleted_at', null);
+      let candidatesFeed: any[] = [];
 
-      if (error) {
-        console.warn('Profiles query warning:', error.message);
-      }
+      if (supabase) {
+        let { data: profiles, error } = await supabase
+          .from('profiles')
+          .select('id, name, email, phone, role, is_active')
+          .is('deleted_at', null);
 
-      const tenantCandidates = (profiles || []).filter((p: any) => {
-        if (p.is_active === false) return false;
-        if (p.role === 'landlord') return false; // NUNCA mostrar propietarios en el feed de propietarios
-        if (userId && p.id === userId) return false;
-        return true;
-      });
-
-      const profileIds = tenantCandidates.map((p: any) => p.id);
-
-      // Traer tenant_profiles / tenant_preferences si existen
-      const { data: detailedProfiles } = await supabase
-        .from('tenant_profiles')
-        .select('*')
-        .in('user_id', profileIds)
-        .is('deleted_at', null);
-
-      const detailedMap = new Map((detailedProfiles || []).map((dp: any) => [dp.user_id, dp]));
-
-      const { data: prefs } = await supabase
-        .from('tenant_preferences')
-        .select('tenant_id, max_budget, occupants_count, has_pets')
-        .in('tenant_id', profileIds);
-
-      const prefsMap = new Map((prefs || []).map((p: any) => [p.tenant_id, p]));
-
-      // Traer fotos de inquilinos si existen
-      const { data: photos } = await supabase
-        .from('tenant_photos')
-        .select('tenant_profile_id, url, position')
-        .order('position', { ascending: true });
-
-      const photosMap = new Map<string, string[]>();
-      (photos || []).forEach((ph: any) => {
-        const existing = photosMap.get(ph.tenant_profile_id) || [];
-        existing.push(ph.url);
-        photosMap.set(ph.tenant_profile_id, existing);
-      });
-
-      let candidatesFeed = tenantCandidates.map((p: any) => {
-        const detailed = detailedMap.get(p.id);
-        const pref = prefsMap.get(p.id);
-        const tenantPhotos = detailed ? (photosMap.get(detailed.id) || []) : [];
-
-        let ageBracket = '25 - 35 ans';
-        if (detailed?.age) {
-          ageBracket = `${detailed.age} ans`;
-        } else if (p.birth_year) {
-          const age = new Date().getFullYear() - Number(p.birth_year);
-          ageBracket = `${age} ans`;
+        if (error) {
+          console.warn('Profiles query warning:', error.message);
         }
 
-        return {
-          id: p.id,
-          type: 'tenant_candidate',
-          firstName: (p.name || 'Candidato').split(' ')[0],
-          avatar_url: tenantPhotos.length > 0 ? tenantPhotos[0] : null,
-          ageBracket,
-          monthly_income: detailed?.monthly_income ?? null,
-          has_payslips: detailed?.has_payslips ?? false,
-          employment_type: detailed?.employment_type ?? 'indefinido',
-          occupants_count: detailed?.occupants_count ?? 1,
-          has_pets: detailed?.has_pets ?? (pref?.has_pets ?? false),
-          max_budget: detailed?.max_budget ?? (pref?.max_budget ?? 950),
-          target_city: 'Málaga',
-          bio: detailed?.bio || null,
-          trust_score: 90,
-          photos: tenantPhotos,
-        };
-      });
+        const tenantCandidates = (profiles || []).filter((p: any) => {
+          if (p.is_active === false) return false;
+          if (p.role === 'landlord') return false; // NUNCA mostrar propietarios en el feed de propietarios
+          if (userId && p.id === userId) return false;
+          return true;
+        });
+
+        const profileIds = tenantCandidates.map((p: any) => p.id);
+
+        // Traer tenant_profiles / tenant_preferences si existen
+        const { data: detailedProfiles } = await supabase
+          .from('tenant_profiles')
+          .select('*')
+          .in('user_id', profileIds)
+          .is('deleted_at', null);
+
+        const detailedMap = new Map((detailedProfiles || []).map((dp: any) => [dp.user_id, dp]));
+
+        const { data: prefs } = await supabase
+          .from('tenant_preferences')
+          .select('tenant_id, max_budget, occupants_count, has_pets')
+          .in('tenant_id', profileIds);
+
+        const prefsMap = new Map((prefs || []).map((p: any) => [p.tenant_id, p]));
+
+        // Traer fotos de inquilinos si existen
+        const { data: photos } = await supabase
+          .from('tenant_photos')
+          .select('tenant_profile_id, url, position')
+          .order('position', { ascending: true });
+
+        const photosMap = new Map<string, string[]>();
+        (photos || []).forEach((ph: any) => {
+          const existing = photosMap.get(ph.tenant_profile_id) || [];
+          existing.push(ph.url);
+          photosMap.set(ph.tenant_profile_id, existing);
+        });
+
+        candidatesFeed = tenantCandidates.map((p: any) => {
+          const detailed = detailedMap.get(p.id);
+          const pref = prefsMap.get(p.id);
+          const tenantPhotos = detailed ? (photosMap.get(detailed.id) || []) : [];
+
+          let ageBracket = '25 - 35 ans';
+          if (detailed?.age) {
+            ageBracket = `${detailed.age} ans`;
+          } else if (p.birth_year) {
+            const age = new Date().getFullYear() - Number(p.birth_year);
+            ageBracket = `${age} ans`;
+          }
+
+          return {
+            id: p.id,
+            type: 'tenant_candidate',
+            firstName: (p.name || 'Candidato').split(' ')[0],
+            avatar_url: tenantPhotos.length > 0 ? tenantPhotos[0] : null,
+            ageBracket,
+            monthly_income: detailed?.monthly_income ?? null,
+            has_payslips: detailed?.has_payslips ?? false,
+            employment_type: detailed?.employment_type ?? 'indefinido',
+            occupants_count: detailed?.occupants_count ?? 1,
+            has_pets: detailed?.has_pets ?? (pref?.has_pets ?? false),
+            max_budget: detailed?.max_budget ?? (pref?.max_budget ?? 950),
+            target_city: 'Málaga',
+            bio: detailed?.bio || null,
+            trust_score: 90,
+            photos: tenantPhotos,
+          };
+        });
+      }
 
       // Complementar con perfiles registrados en RentiaDB
       const localTenants = RentiaDB.getTenantProfiles({
@@ -430,34 +507,36 @@ matchingRouter.get('/feed', async (req: Request, res: Response) => {
       });
 
     // Enriquecer con Supabase si está disponible
-    try {
-      let query = supabase
-        .from('listings')
-        .select('*, profiles:landlord_id(id, name, avatar_url, trust_score, is_active, role)')
-        .eq('is_active', true)
-        .is('deleted_at', null)
-        .order('created_at', { ascending: false });
+    if (supabase) {
+      try {
+        let query = supabase
+          .from('listings')
+          .select('*, profiles:landlord_id(id, name, avatar_url, trust_score, is_active, role)')
+          .eq('is_active', true)
+          .is('deleted_at', null)
+          .order('created_at', { ascending: false });
 
-      if (cityFilter && cityFilter !== 'all') {
-        query = query.eq('city', cityFilter);
-      }
+        if (cityFilter && cityFilter !== 'all') {
+          query = query.eq('city', cityFilter);
+        }
 
-      const { data: listings } = await query;
-      if (listings && listings.length > 0) {
-        const map = new Map<string, any>();
-        formattedListings.forEach(fl => map.set(fl.id, fl));
-        listings.forEach((l: any) => {
-          map.set(l.id, {
-            ...l,
-            type: 'listing',
-            landlord_name: (l.profiles as any)?.name || l.landlord_name || 'Propietario Rentia',
-            landlord_avatar: (l.profiles as any)?.avatar_url || l.landlord_avatar,
+        const { data: listings } = await query;
+        if (listings && listings.length > 0) {
+          const map = new Map<string, any>();
+          formattedListings.forEach(fl => map.set(fl.id, fl));
+          listings.forEach((l: any) => {
+            map.set(l.id, {
+              ...l,
+              type: 'listing',
+              landlord_name: (l.profiles as any)?.name || l.landlord_name || 'Propietario Rentia',
+              landlord_avatar: (l.profiles as any)?.avatar_url || l.landlord_avatar,
+            });
           });
-        });
-        formattedListings = Array.from(map.values());
+          formattedListings = Array.from(map.values());
+        }
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/listings-with-distance', error: err });
       }
-    } catch (err: any) {
-      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/listings-with-distance', error: err });
     }
 
     let feedItems = formattedListings;
@@ -495,7 +574,7 @@ matchingRouter.get('/feed', async (req: Request, res: Response) => {
  */
 matchingRouter.post('/listings', requireTenantAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const supabase = getSupabase(req.supabaseToken);
+    const supabase = isSupabaseConfigured() ? getSupabase(req.supabaseToken) : null;
     const authenticatedUser = req.tenant;
 
     if (!authenticatedUser?.id) {
@@ -503,45 +582,72 @@ matchingRouter.post('/listings', requireTenantAuth, async (req: AuthenticatedReq
       return;
     }
 
+    let landlordId = authenticatedUser.id;
+    let landlordName = authenticatedUser.name;
+    let landlordEmail = authenticatedUser.email;
+
     // 1. Verificación ESTRICTA del rol 'landlord' confirmado en base de datos
-    const { data: landlordProfile, error: profileErr } = await supabase
-      .from('profiles')
-      .select('id, name, email, avatar_url, role, is_active')
-      .eq('id', authenticatedUser.id)
-      .maybeSingle();
+    if (supabase) {
+      const { data: landlordProfile, error: profileErr } = await supabase
+        .from('profiles')
+        .select('id, name, email, avatar_url, role, is_active')
+        .eq('id', authenticatedUser.id)
+        .maybeSingle();
 
-    if (profileErr || !landlordProfile) {
-      res.status(403).json({ error: 'Perfil no encontrado o inaccesible.' });
-      return;
-    }
+      if (profileErr || !landlordProfile) {
+        res.status(403).json({ error: 'Perfil no encontrado o inaccesible.' });
+        return;
+      }
 
-    if (landlordProfile.role !== 'landlord' && authenticatedUser.role !== 'landlord') {
-      res.status(403).json({ 
-        error: 'Acción no autorizada: solo los propietarios autenticados y confirmados pueden publicar un anuncio.',
-        code: 'LANDLORD_ROLE_REQUIRED'
-      });
-      return;
-    }
+      if (landlordProfile.role !== 'landlord' && authenticatedUser.role !== 'landlord') {
+        res.status(403).json({ 
+          error: 'Acción no autorizada: solo los propietarios autenticados y confirmados pueden publicar un anuncio.',
+          code: 'LANDLORD_ROLE_REQUIRED'
+        });
+        return;
+      }
 
-    if (landlordProfile.is_active === false) {
-      res.status(403).json({ error: 'Tu cuenta de propietario está actualmente inactiva o suspendida.' });
-      return;
-    }
+      if (landlordProfile.is_active === false) {
+        res.status(403).json({ error: 'Tu cuenta de propietario está actualmente inactiva o suspendida.' });
+        return;
+      }
 
-    // Límite estricto: Máximo 10 anuncios activos por propietario (Prioridad P1.4)
-    const { count: activeCount } = await supabase
-      .from('listings')
-      .select('id', { count: 'exact', head: true })
-      .eq('landlord_id', landlordProfile.id)
-      .eq('is_active', true)
-      .is('deleted_at', null);
+      landlordId = landlordProfile.id;
+      landlordName = landlordProfile.name;
+      landlordEmail = landlordProfile.email;
 
-    if (activeCount !== null && activeCount >= 10) {
-      res.status(400).json({
-        error: 'Límite alcanzado: un propietario solo puede tener hasta 10 anuncios activos simultáneamente.',
-        code: 'MAX_LISTINGS_LIMIT_REACHED'
-      });
-      return;
+      // Límite estricto: Máximo 10 anuncios activos por propietario (Prioridad P1.4)
+      const { count: activeCount } = await supabase
+        .from('listings')
+        .select('id', { count: 'exact', head: true })
+        .eq('landlord_id', landlordProfile.id)
+        .eq('is_active', true)
+        .is('deleted_at', null);
+
+      if (activeCount !== null && activeCount >= 10) {
+        res.status(400).json({
+          error: 'Límite alcanzado: un propietario solo puede tener hasta 10 anuncios activos simultáneamente.',
+          code: 'MAX_LISTINGS_LIMIT_REACHED'
+        });
+        return;
+      }
+    } else {
+      if (authenticatedUser.role !== 'landlord') {
+        res.status(403).json({ 
+          error: 'Acción no autorizada: solo los propietarios autenticados y confirmados pueden publicar un anuncio.',
+          code: 'LANDLORD_ROLE_REQUIRED'
+        });
+        return;
+      }
+      const existingListings = RentiaDB.getListings({ landlordId: authenticatedUser.id });
+      const activeListingsCount = existingListings.filter(l => l.is_active !== false).length;
+      if (activeListingsCount >= 10) {
+        res.status(400).json({
+          error: 'Límite alcanzado: un propietario solo puede tener hasta 10 anuncios activos simultáneamente.',
+          code: 'MAX_LISTINGS_LIMIT_REACHED'
+        });
+        return;
+      }
     }
 
     // 2. Validación de fotos mínimas (Mínimo 10 fotos requeridas - Prioridad P1.3)
@@ -579,9 +685,9 @@ matchingRouter.post('/listings', requireTenantAuth, async (req: AuthenticatedReq
 
     // 4. Construcción estricta del payload y persistencia en la base de datos real
     const listingPayload = {
-      landlord_id: landlordProfile.id,
-      landlord_name: landlordProfile.name,
-      landlord_email: landlordProfile.email,
+      landlord_id: landlordId,
+      landlord_name: landlordName,
+      landlord_email: landlordEmail,
       title: String(req.body.title).trim(),
       description: req.body.description ? String(req.body.description).trim() : null,
       city: rawCity,
@@ -615,7 +721,7 @@ matchingRouter.post('/listings', requireTenantAuth, async (req: AuthenticatedReq
     if (req.body.ownership_document_url && savedListing?.id) {
       RentiaDB.createOwnershipVerification({
         listing_id: savedListing.id,
-        landlord_id: landlordProfile.id,
+        landlord_id: landlordId,
         document_url: String(req.body.ownership_document_url).trim(),
         document_type: req.body.ownership_document_type || 'nota_simple',
         cadastral_reference: req.body.cadastral_reference || null,
@@ -624,28 +730,30 @@ matchingRouter.post('/listings', requireTenantAuth, async (req: AuthenticatedReq
     }
 
     // Intentar sincronizar con Supabase en segundo plano si está disponible
-    try {
-      await supabase
-        .from('listings')
-        .insert({
-          id: savedListing.id,
-          ...listingPayload,
-          created_at: savedListing.created_at,
-          updated_at: savedListing.updated_at,
-        });
+    if (supabase) {
+      try {
+        await supabase
+          .from('listings')
+          .insert({
+            id: savedListing.id,
+            ...listingPayload,
+            created_at: savedListing.created_at,
+            updated_at: savedListing.updated_at,
+          });
 
-      if (req.body.ownership_document_url) {
-        await supabase.from('property_ownership_verifications').insert({
-          listing_id: savedListing.id,
-          landlord_id: landlordProfile.id,
-          document_url: String(req.body.ownership_document_url).trim(),
-          document_type: req.body.ownership_document_type || 'nota_simple',
-          cadastral_reference: req.body.cadastral_reference || null,
-          status: 'pending',
-        });
+        if (req.body.ownership_document_url) {
+          await supabase.from('property_ownership_verifications').insert({
+            listing_id: savedListing.id,
+            landlord_id: landlordId,
+            document_url: String(req.body.ownership_document_url).trim(),
+            document_type: req.body.ownership_document_type || 'nota_simple',
+            cadastral_reference: req.body.cadastral_reference || null,
+            status: 'pending',
+          });
+        }
+      } catch (syncErr) {
+        console.warn('Supabase listing sync warning:', syncErr);
       }
-    } catch (syncErr) {
-      console.warn('Supabase listing sync warning:', syncErr);
     }
 
     res.json({
@@ -667,95 +775,100 @@ matchingRouter.post('/listings', requireTenantAuth, async (req: AuthenticatedReq
  */
 matchingRouter.get('/candidates', async (req: Request, res: Response) => {
   try {
-    const supabase = getSupabase();
+    let sanitizedCandidates: any[] = [];
 
-    let { data: profiles, error } = await supabase
-      .from('profiles')
-      .select('id, name, avatar_url, birth_year, trust_score, is_verified, is_active')
-      .is('deleted_at', null);
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
 
-    // Fallback gracieux au cas où la migration SQL n'a pas encore été appliquée dans Supabase
-    if (error && (error.message?.includes('birth_year') || error.message?.includes('is_verified') || error.message?.includes('is_active') || error.code === '42703')) {
-      const fallback = await supabase
-        .from('profiles')
-        .select('id, name, avatar_url, trust_score')
-        .is('deleted_at', null);
-      if (!fallback.error && fallback.data) {
-        profiles = fallback.data as any;
-        error = null;
+        let { data: profiles, error } = await supabase
+          .from('profiles')
+          .select('id, name, avatar_url, birth_year, trust_score, is_verified, is_active')
+          .is('deleted_at', null);
+
+        // Fallback gracieux au cas où la migration SQL n'a pas encore été appliquée dans Supabase
+        if (error && (error.message?.includes('birth_year') || error.message?.includes('is_verified') || error.message?.includes('is_active') || error.code === '42703')) {
+          const fallback = await supabase
+            .from('profiles')
+            .select('id, name, avatar_url, trust_score')
+            .is('deleted_at', null);
+          if (!fallback.error && fallback.data) {
+            profiles = fallback.data as any;
+            error = null;
+          }
+        }
+
+        if (!error && profiles) {
+          const profileIds = profiles.map((p: any) => p.id);
+
+          const { data: prefs } = await supabase
+            .from('tenant_preferences')
+            .select('tenant_id, max_budget')
+            .in('tenant_id', profileIds);
+
+          const prefsMap = new Map((prefs || []).map((p: any) => [p.tenant_id, p.max_budget]));
+
+          const { data: verifiedLeases } = await supabase
+            .from('leases')
+            .select('user_id')
+            .eq('status', 'verified')
+            .in('user_id', profileIds);
+
+          const verifiedCountMap = new Map<string, number>();
+          (verifiedLeases || []).forEach((l: any) => {
+            verifiedCountMap.set(l.user_id, (verifiedCountMap.get(l.user_id) || 0) + 1);
+          });
+
+          const eligibleCandidates = profiles.filter((p: any) => {
+            // Ignorer les comptes désactivés temporairement
+            if (p.is_active === false) return false;
+            if (!p.name || p.name.trim().length === 0) return false;
+            const verifiedCount = verifiedCountMap.get(p.id) || 0;
+            const hasVerifiedReputation = (p.trust_score || 0) >= 50 || p.is_verified === true;
+            return verifiedCount >= 1 || hasVerifiedReputation;
+          });
+
+          sanitizedCandidates = eligibleCandidates.map((p: any) => {
+            let ageBracket = '25 - 35 ans';
+            let ageNum = 28;
+            if (p.birth_year) {
+              const age = new Date().getFullYear() - Number(p.birth_year);
+              ageNum = age;
+              if (age < 25) ageBracket = '18 - 25 ans';
+              else if (age <= 35) ageBracket = '25 - 35 ans';
+              else if (age <= 45) ageBracket = '35 - 45 ans';
+              else ageBracket = '45+ ans';
+            }
+
+            return {
+              tenant_id: p.id,
+              firstName: (p.name || 'Inquilino').split(' ')[0],
+              fullName: p.name || 'Inquilino Verificado',
+              avatar_url: p.avatar_url || null,
+              photos: p.avatar_url ? [p.avatar_url] : [],
+              age: ageNum,
+              ageBracket,
+              maxBudget: prefsMap.get(p.id) || 950,
+              monthly_income: p.monthly_income || 2400,
+              employment_type: p.employment_type || 'indefinido',
+              profession: p.profession || 'Profesional',
+              has_payslips: true,
+              has_guarantor: false,
+              guarantor_income: 0,
+              has_pets: false,
+              occupants_count: 1,
+              target_city: 'Málaga',
+              bio: 'Inquilino con pasaporte certificado y pagos demostrables.',
+              trustScore: p.trust_score ?? 50,
+              verifiedLeasesCount: verifiedCountMap.get(p.id) || 0,
+              is_verified: true,
+            };
+          });
+        }
+      } catch (sbErr: any) {
+        console.warn('Supabase candidates query notice:', sbErr?.message || sbErr);
       }
     }
-
-    if (error || !profiles) {
-      res.json([]);
-      return;
-    }
-
-    const profileIds = profiles.map((p: any) => p.id);
-
-    const { data: prefs } = await supabase
-      .from('tenant_preferences')
-      .select('tenant_id, max_budget')
-      .in('tenant_id', profileIds);
-
-    const prefsMap = new Map((prefs || []).map((p: any) => [p.tenant_id, p.max_budget]));
-
-    const { data: verifiedLeases } = await supabase
-      .from('leases')
-      .select('user_id')
-      .eq('status', 'verified')
-      .in('user_id', profileIds);
-
-    const verifiedCountMap = new Map<string, number>();
-    (verifiedLeases || []).forEach((l: any) => {
-      verifiedCountMap.set(l.user_id, (verifiedCountMap.get(l.user_id) || 0) + 1);
-    });
-
-    const eligibleCandidates = profiles.filter((p: any) => {
-      // Ignorer les comptes désactivés temporairement
-      if (p.is_active === false) return false;
-      if (!p.name || p.name.trim().length === 0) return false;
-      const verifiedCount = verifiedCountMap.get(p.id) || 0;
-      const hasVerifiedReputation = (p.trust_score || 0) >= 50 || p.is_verified === true;
-      return verifiedCount >= 1 || hasVerifiedReputation;
-    });
-
-    const sanitizedCandidates: any[] = eligibleCandidates.map((p: any) => {
-      let ageBracket = '25 - 35 ans';
-      let ageNum = 28;
-      if (p.birth_year) {
-        const age = new Date().getFullYear() - Number(p.birth_year);
-        ageNum = age;
-        if (age < 25) ageBracket = '18 - 25 ans';
-        else if (age <= 35) ageBracket = '25 - 35 ans';
-        else if (age <= 45) ageBracket = '35 - 45 ans';
-        else ageBracket = '45+ ans';
-      }
-
-      return {
-        tenant_id: p.id,
-        firstName: (p.name || 'Inquilino').split(' ')[0],
-        fullName: p.name || 'Inquilino Verificado',
-        avatar_url: p.avatar_url || null,
-        photos: p.avatar_url ? [p.avatar_url] : [],
-        age: ageNum,
-        ageBracket,
-        maxBudget: prefsMap.get(p.id) || 950,
-        monthly_income: p.monthly_income || 2400,
-        employment_type: p.employment_type || 'indefinido',
-        profession: p.profession || 'Profesional',
-        has_payslips: true,
-        has_guarantor: false,
-        guarantor_income: 0,
-        has_pets: false,
-        occupants_count: 1,
-        target_city: 'Málaga',
-        bio: 'Inquilino con pasaporte certificado y pagos demostrables.',
-        trustScore: p.trust_score ?? 50,
-        verifiedLeasesCount: verifiedCountMap.get(p.id) || 0,
-        is_verified: true,
-      };
-    });
 
     // Complementar con inquilinos registrados en RentiaDB
     const localTenants = RentiaDB.getTenantProfiles();
@@ -822,23 +935,25 @@ matchingRouter.post('/swipe', async (req: Request, res: Response) => {
       action: action,
     });
 
-    const supabase = getSupabase();
+    const supabase = isSupabaseConfigured() ? getSupabase() : null;
 
     // Replicar en Supabase si está disponible
-    try {
-      await supabase
-        .from('swipes')
-        .upsert({
-          actor_id: actorId,
-          actor_role: actorRole,
-          listing_id: listingId,
-          target_user_id: targetUserId,
-          action: action,
-        }, {
-          onConflict: 'actor_id,listing_id,target_user_id'
-        });
-    } catch (swipeError: any) {
-      console.warn('Note insertion swipe:', swipeError?.message);
+    if (supabase) {
+      try {
+        await supabase
+          .from('swipes')
+          .upsert({
+            actor_id: actorId,
+            actor_role: actorRole,
+            listing_id: listingId,
+            target_user_id: targetUserId,
+            action: action,
+          }, {
+            onConflict: 'actor_id,listing_id,target_user_id'
+          });
+      } catch (swipeError: any) {
+        console.warn('Note insertion swipe:', swipeError?.message);
+      }
     }
 
     // 2. Si la acción actual es "pass", no hay match ni apertura de chat
@@ -883,28 +998,30 @@ matchingRouter.post('/swipe', async (req: Request, res: Response) => {
       matchRecordId = savedMatch.id;
       isMatch = true;
 
-      // Replicar en Supabase
-      try {
-        await supabase
-          .from('matches')
-          .upsert({
-            id: savedMatch.id,
-            listing_id: listingId,
-            tenant_id: tenantId,
-            landlord_id: landlordId,
-            status: 'active',
-            landlord_first_message_sent: false,
-          }, {
-            onConflict: 'listing_id,tenant_id'
+      // Replicar en Supabase si está disponible
+      if (supabase) {
+        try {
+          await supabase
+            .from('matches')
+            .upsert({
+              id: savedMatch.id,
+              listing_id: listingId,
+              tenant_id: tenantId,
+              landlord_id: landlordId,
+              status: 'active',
+              landlord_first_message_sent: false,
+            }, {
+              onConflict: 'listing_id,tenant_id'
+            });
+        } catch (err: any) {
+          logSupabaseWriteFailure({
+            route: 'POST /api/matching/swipe (upsert match - landlord like)',
+            operation: 'upsert',
+            target_table: 'matches',
+            payload: { id: savedMatch.id, listing_id: listingId, tenant_id: tenantId, landlord_id: landlordId },
+            error: err,
           });
-      } catch (err: any) {
-        logSupabaseWriteFailure({
-          route: 'POST /api/matching/swipe (upsert match - landlord like)',
-          operation: 'upsert',
-          target_table: 'matches',
-          payload: { id: savedMatch.id, listing_id: listingId, tenant_id: tenantId, landlord_id: landlordId },
-          error: err,
-        });
+        }
       }
     } else {
       // Caso 2: INQUILINO da LIKE -> Verifica si el propietario ya le había dado like
@@ -915,7 +1032,7 @@ matchingRouter.post('/swipe', async (req: Request, res: Response) => {
         landlordAlreadyLiked = true;
       }
 
-      if (!landlordAlreadyLiked) {
+      if (!landlordAlreadyLiked && supabase) {
         try {
           const { data: landlordSwipe } = await supabase
             .from('swipes')
@@ -945,27 +1062,29 @@ matchingRouter.post('/swipe', async (req: Request, res: Response) => {
         matchRecordId = savedMatch.id;
         isMatch = true;
 
-        try {
-          await supabase
-            .from('matches')
-            .upsert({
-              id: savedMatch.id,
-              listing_id: listingId,
-              tenant_id: actorId,
-              landlord_id: targetUserId,
-              status: 'active',
-              landlord_first_message_sent: false,
-            }, {
-              onConflict: 'listing_id,tenant_id'
+        if (supabase) {
+          try {
+            await supabase
+              .from('matches')
+              .upsert({
+                id: savedMatch.id,
+                listing_id: listingId,
+                tenant_id: actorId,
+                landlord_id: targetUserId,
+                status: 'active',
+                landlord_first_message_sent: false,
+              }, {
+                onConflict: 'listing_id,tenant_id'
+              });
+          } catch (err: any) {
+            logSupabaseWriteFailure({
+              route: 'POST /api/matching/swipe (upsert match - mutual like)',
+              operation: 'upsert',
+              target_table: 'matches',
+              payload: { id: savedMatch.id, listing_id: listingId, tenant_id: actorId, landlord_id: targetUserId },
+              error: err,
             });
-        } catch (err: any) {
-          logSupabaseWriteFailure({
-            route: 'POST /api/matching/swipe (upsert match - mutual like)',
-            operation: 'upsert',
-            target_table: 'matches',
-            payload: { id: savedMatch.id, listing_id: listingId, tenant_id: actorId, landlord_id: targetUserId },
-            error: err,
-          });
+          }
         }
       } else {
         // Queda registrado como like unilateral pendiente del inquilino
@@ -1039,23 +1158,25 @@ matchingRouter.post('/swipe', async (req: Request, res: Response) => {
 matchingRouter.get('/my-likes', requireTenantAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userId = req.tenant!.id;
-    const supabase = getSupabase(req.supabaseToken);
+    const supabase = isSupabaseConfigured() ? getSupabase(req.supabaseToken) : null;
 
     // 1. Obtener swipes del usuario (Supabase + fallback a RentiaDB)
     let myLikes: any[] = [];
-    try {
-      const { data, error } = await supabase
-        .from('swipes')
-        .select('listing_id, target_user_id, action, created_at')
-        .eq('actor_id', userId)
-        .eq('action', 'like')
-        .order('created_at', { ascending: false });
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('swipes')
+          .select('listing_id, target_user_id, action, created_at')
+          .eq('actor_id', userId)
+          .eq('action', 'like')
+          .order('created_at', { ascending: false });
 
-      if (!error && Array.isArray(data)) {
-        myLikes = data;
+        if (!error && Array.isArray(data)) {
+          myLikes = data;
+        }
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/my-likes (fetch swipes)', error: err });
       }
-    } catch (err: any) {
-      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/my-likes (fetch swipes)', error: err });
     }
 
     if (myLikes.length === 0) {
@@ -1080,17 +1201,19 @@ matchingRouter.get('/my-likes', requireTenantAuth, async (req: AuthenticatedRequ
     // 2. Obtener listings asociados (Supabase + fallback RentiaDB)
     const listingsMap = new Map<string, any>();
 
-    try {
-      const { data: likedListings } = await supabase
-        .from('listings')
-        .select('*, profiles:landlord_id(id, name, avatar_url, trust_score)')
-        .in('id', listingIds);
+    if (supabase) {
+      try {
+        const { data: likedListings } = await supabase
+          .from('listings')
+          .select('*, profiles:landlord_id(id, name, avatar_url, trust_score)')
+          .in('id', listingIds);
 
-      (likedListings || []).forEach((l: any) => {
-        listingsMap.set(l.id, l);
-      });
-    } catch (err: any) {
-      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/my-likes (fetch listings)', error: err });
+        (likedListings || []).forEach((l: any) => {
+          listingsMap.set(l.id, l);
+        });
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/my-likes (fetch listings)', error: err });
+      }
     }
 
     // Complementar con RentiaDB y SEED_LISTINGS si falta alguno
@@ -1111,18 +1234,20 @@ matchingRouter.get('/my-likes', requireTenantAuth, async (req: AuthenticatedRequ
 
     // 3. Obtener matches para determinar si el chat está abierto
     const matchesMap = new Map<string, any>(); // key: listing_id
-    try {
-      const { data: sbMatches } = await supabase
-        .from('matches')
-        .select('id, listing_id, tenant_id, landlord_id, status, landlord_first_message_sent')
-        .eq('tenant_id', userId)
-        .in('listing_id', listingIds);
+    if (supabase) {
+      try {
+        const { data: sbMatches } = await supabase
+          .from('matches')
+          .select('id, listing_id, tenant_id, landlord_id, status, landlord_first_message_sent')
+          .eq('tenant_id', userId)
+          .in('listing_id', listingIds);
 
-      (sbMatches || []).forEach((m: any) => {
-        matchesMap.set(m.listing_id, m);
-      });
-    } catch (err: any) {
-      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/my-likes (fetch matches)', error: err });
+        (sbMatches || []).forEach((m: any) => {
+          matchesMap.set(m.listing_id, m);
+        });
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/my-likes (fetch matches)', error: err });
+      }
     }
 
     const localMatches = RentiaDB.getMatches({ tenantId: userId });
@@ -1134,21 +1259,23 @@ matchingRouter.get('/my-likes', requireTenantAuth, async (req: AuthenticatedRequ
 
     // 4. Obtener respuestas de propietarios (swipes de pass o like)
     const landlordActionsMap = new Map<string, 'like' | 'pass'>();
-    try {
-      const { data: landlordSwipes } = await supabase
-        .from('swipes')
-        .select('listing_id, action')
-        .eq('target_user_id', userId)
-        .eq('actor_role', 'landlord')
-        .in('listing_id', listingIds);
+    if (supabase) {
+      try {
+        const { data: landlordSwipes } = await supabase
+          .from('swipes')
+          .select('listing_id, action')
+          .eq('target_user_id', userId)
+          .eq('actor_role', 'landlord')
+          .in('listing_id', listingIds);
 
-      (landlordSwipes || []).forEach((ls: any) => {
-        if (ls.listing_id) {
-          landlordActionsMap.set(ls.listing_id, ls.action);
-        }
-      });
-    } catch (err: any) {
-      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/my-likes (fetch landlord swipes)', error: err });
+        (landlordSwipes || []).forEach((ls: any) => {
+          if (ls.listing_id) {
+            landlordActionsMap.set(ls.listing_id, ls.action);
+          }
+        });
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/my-likes (fetch landlord swipes)', error: err });
+      }
     }
 
     // 5. Construir respuesta detallada (deduplicando por listing_id para garantizar elementos únicos)
@@ -1211,29 +1338,124 @@ matchingRouter.get('/my-likes', requireTenantAuth, async (req: AuthenticatedRequ
 });
 
 /**
+ * GET /api/matching/swiped-ids
+ * Devuelve los IDs de inmuebles que el usuario ya ha interactuado (like, pass)
+ */
+matchingRouter.get('/swiped-ids', async (req: Request, res: Response) => {
+  try {
+    const actorId = String(req.query.actorId || (req as any).tenant?.id || '');
+    if (!actorId) {
+      res.json({ liked: [], passed: [], all: [] });
+      return;
+    }
+    const ids = RentiaDB.getSwipedListingIds(actorId);
+    res.json(ids);
+  } catch (err: any) {
+    res.json({ liked: [], passed: [], all: [] });
+  }
+});
+
+/**
+ * DELETE /api/matching/likes/:listingId
+ * Permite al inquilino quitar el like de un inmueble guardado
+ */
+matchingRouter.delete('/likes/:listingId', async (req: Request, res: Response) => {
+  try {
+    const listingId = req.params.listingId;
+    const actorId = String(req.query.actorId || (req as any).tenant?.id || req.body?.actorId || '');
+    if (!listingId || !actorId) {
+      res.status(400).json({ error: 'Faltan parámetros requeridos (listingId y actorId).' });
+      return;
+    }
+
+    const removed = RentiaDB.removeSwipe(actorId, listingId);
+
+    // Sincronizar con Supabase si está disponible
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
+        await supabase
+          .from('swipes')
+          .delete()
+          .match({ actor_id: actorId, listing_id: listingId });
+        await supabase
+          .from('matches')
+          .delete()
+          .match({ tenant_id: actorId, listing_id: listingId, status: 'pending' });
+      } catch (sbErr) {
+        console.warn('[SUPABASE_UNLIKE_WARNING]', sbErr);
+      }
+    }
+
+    res.json({ success: true, removed, listingId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Error al quitar el like.' });
+  }
+});
+
+/**
+ * POST /api/matching/unlike
+ * Alternativa POST para quitar like
+ */
+matchingRouter.post('/unlike', async (req: Request, res: Response) => {
+  try {
+    const { listingId, actorId: bodyActorId } = req.body;
+    const actorId = String(bodyActorId || (req as any).tenant?.id || '');
+    if (!listingId || !actorId) {
+      res.status(400).json({ error: 'Faltan parámetros requeridos (listingId y actorId).' });
+      return;
+    }
+
+    const removed = RentiaDB.removeSwipe(actorId, listingId);
+
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
+        await supabase
+          .from('swipes')
+          .delete()
+          .match({ actor_id: actorId, listing_id: listingId });
+        await supabase
+          .from('matches')
+          .delete()
+          .match({ tenant_id: actorId, listing_id: listingId, status: 'pending' });
+      } catch (sbErr) {
+        console.warn('[SUPABASE_UNLIKE_WARNING]', sbErr);
+      }
+    }
+
+    res.json({ success: true, removed, listingId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Error al quitar el like.' });
+  }
+});
+
+/**
  * GET /api/matching/landlord/likes
  * Devuelve todos los perfiles de inquilinos a los que el propietario ha dado 'like'
  */
 matchingRouter.get('/landlord/likes', async (req: Request, res: Response) => {
   try {
     const landlordId = String(req.query.landlordId || (req as any).tenant?.id || 'landlord_demo');
-    const supabase = getSupabase();
+    const supabase = isSupabaseConfigured() ? getSupabase() : null;
 
     // 1. Obtener swipes de like hechos por el propietario (Supabase + fallback RentiaDB)
     let landlordLikes: any[] = [];
-    try {
-      const { data, error } = await supabase
-        .from('swipes')
-        .select('target_user_id, listing_id, created_at, action')
-        .eq('actor_id', landlordId)
-        .eq('action', 'like')
-        .order('created_at', { ascending: false });
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('swipes')
+          .select('target_user_id, listing_id, created_at, action')
+          .eq('actor_id', landlordId)
+          .eq('action', 'like')
+          .order('created_at', { ascending: false });
 
-      if (!error && Array.isArray(data) && data.length > 0) {
-        landlordLikes = data;
+        if (!error && Array.isArray(data) && data.length > 0) {
+          landlordLikes = data;
+        }
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/landlord/likes', error: err });
       }
-    } catch (err: any) {
-      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/landlord/likes', error: err });
     }
 
     if (landlordLikes.length === 0) {
@@ -1346,21 +1568,23 @@ matchingRouter.delete('/landlord/likes/:tenantId', async (req: Request, res: Res
 
     RentiaDB.deleteSwipe(landlordId, tenantId);
 
-    const supabase = getSupabase();
-    try {
-      await supabase
-        .from('swipes')
-        .delete()
-        .eq('actor_id', landlordId)
-        .eq('target_user_id', tenantId);
-    } catch (err: any) {
-      logSupabaseWriteFailure({
-        route: 'DELETE /api/matching/landlord/likes/:tenantId',
-        operation: 'delete',
-        target_table: 'swipes',
-        payload: { actor_id: landlordId, target_user_id: tenantId },
-        error: err,
-      });
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
+        await supabase
+          .from('swipes')
+          .delete()
+          .eq('actor_id', landlordId)
+          .eq('target_user_id', tenantId);
+      } catch (err: any) {
+        logSupabaseWriteFailure({
+          route: 'DELETE /api/matching/landlord/likes/:tenantId',
+          operation: 'delete',
+          target_table: 'swipes',
+          payload: { actor_id: landlordId, target_user_id: tenantId },
+          error: err,
+        });
+      }
     }
 
     res.json({ success: true, message: 'Like eliminado con éxito' });
@@ -1376,13 +1600,25 @@ matchingRouter.delete('/landlord/likes/:tenantId', async (req: Request, res: Res
 matchingRouter.get('/tenant-profile/:userId', async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
-    const supabase = getSupabase();
+    let profile: any = null;
 
-    const { data: profile } = await supabase
-      .from('tenant_profiles')
-      .select('*, photos:tenant_photos(*), locations:tenant_search_locations(*)')
-      .eq('user_id', userId)
-      .maybeSingle();
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
+        const { data } = await supabase
+          .from('tenant_profiles')
+          .select('*, photos:tenant_photos(*), locations:tenant_search_locations(*)')
+          .eq('user_id', userId)
+          .maybeSingle();
+        if (data) profile = data;
+      } catch (sbErr) {
+        console.warn('Supabase tenant-profile query warning:', sbErr);
+      }
+    }
+
+    if (!profile) {
+      profile = RentiaDB.getTenantProfileByUserId(userId) || RentiaDB.getTenantProfileById(userId);
+    }
 
     res.json({ profile: profile || null });
   } catch (err: any) {
@@ -1396,7 +1632,7 @@ matchingRouter.get('/tenant-profile/:userId', async (req: Request, res: Response
  */
 matchingRouter.put('/tenant-profile', requireTenantAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const supabase = getSupabase(req.supabaseToken);
+    const supabase = isSupabaseConfigured() ? getSupabase(req.supabaseToken) : null;
     const userId = req.tenant!.id;
 
     const payload = {
@@ -1467,24 +1703,26 @@ matchingRouter.put('/tenant-profile', requireTenantAuth, async (req: Authenticat
     });
 
     // Sincronizar con Supabase si está disponible
-    try {
-      const { data: updatedProfile } = await supabase
-        .from('tenant_profiles')
-        .upsert(payload, { onConflict: 'user_id' })
-        .select()
-        .single();
+    if (supabase) {
+      try {
+        const { data: updatedProfile } = await supabase
+          .from('tenant_profiles')
+          .upsert(payload, { onConflict: 'user_id' })
+          .select()
+          .single();
 
-      if (photos.length >= 3 && updatedProfile?.id) {
-        await supabase.from('tenant_photos').delete().eq('tenant_profile_id', updatedProfile.id);
-        const photoInserts = photos.map((url: string, index: number) => ({
-          tenant_profile_id: updatedProfile.id,
-          url,
-          position: index,
-        }));
-        await supabase.from('tenant_photos').insert(photoInserts);
+        if (photos.length >= 3 && updatedProfile?.id) {
+          await supabase.from('tenant_photos').delete().eq('tenant_profile_id', updatedProfile.id);
+          const photoInserts = photos.map((url: string, index: number) => ({
+            tenant_profile_id: updatedProfile.id,
+            url,
+            position: index,
+          }));
+          await supabase.from('tenant_photos').insert(photoInserts);
+        }
+      } catch (syncErr) {
+        console.warn('Supabase tenant profile sync warning:', syncErr);
       }
-    } catch (syncErr) {
-      console.warn('Supabase tenant profile sync warning:', syncErr);
     }
 
     res.json({ success: true, profile: savedLocalProfile });
@@ -1514,19 +1752,25 @@ matchingRouter.get('/compatibility/:listingId/:tenantId', async (req: Request, r
 matchingRouter.get('/points/:userId', async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
-    const supabase = getSupabase();
+    let eventsList: any[] = [];
 
-    const { data: events, error } = await supabase
-      .from('rentia_points_events')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
+        const { data: events, error } = await supabase
+          .from('rentia_points_events')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false });
 
-    if (error) {
-      throw error;
+        if (!error && events) {
+          eventsList = events;
+        }
+      } catch (sbErr) {
+        console.warn('Supabase points query notice:', sbErr);
+      }
     }
 
-    const eventsList = events || [];
     const totalPoints = eventsList.reduce((sum, ev) => sum + (ev.points_delta || 0), 0);
     
     res.json({
@@ -1574,14 +1818,19 @@ matchingRouter.get('/matches', async (req: Request, res: Response) => {
 
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.substring(7).trim();
-      try {
-        const supabase = getSupabase();
-        const { data: userData } = await supabase.auth.getUser(token);
-        if (userData?.user?.id) {
-          userId = userData.user.id;
+      const localUser = RentiaDB.getUserById(token) || RentiaDB.getUserByEmail(token);
+      if (localUser) {
+        userId = localUser.id;
+      } else if (isSupabaseConfigured()) {
+        try {
+          const supabase = getSupabase();
+          const { data: userData } = await supabase.auth.getUser(token);
+          if (userData?.user?.id) {
+            userId = userData.user.id;
+          }
+        } catch (err: any) {
+          console.error('[SUPABASE_AUTH_FAILED]', { route: 'GET /api/matching/matches (auth.getUser)', error: err });
         }
-      } catch (err: any) {
-        console.error('[SUPABASE_AUTH_FAILED]', { route: 'GET /api/matching/matches (auth.getUser)', error: err });
       }
       if (!userId && token.length > 5) {
         userId = token;
@@ -1597,80 +1846,82 @@ matchingRouter.get('/matches', async (req: Request, res: Response) => {
     // 1. Obtener de la base de datos persistente local
     const localMatches = RentiaDB.getMatches(userId) || [];
 
-    // 2. Intentar combinar con Supabase
-    try {
-      const supabase = getSupabase();
-      const { data: matches } = await supabase
-        .from('matches')
-        .select(`
-          id,
-          listing_id,
-          tenant_id,
-          landlord_id,
-          status,
-          opened_by,
-          created_at,
-          listings (
+    // 2. Intentar combinar con Supabase si está configurado
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
+        const { data: matches } = await supabase
+          .from('matches')
+          .select(`
             id,
-            title,
-            price,
-            images,
-            address_exact
-          ),
-          tenant_profile:profiles!matches_tenant_id_fkey (
-            id,
-            name,
-            email,
-            phone
-          ),
-          landlord_profile:profiles!matches_landlord_id_fkey (
-            id,
-            name,
-            email,
-            phone
-          )
-        `)
-        .or(`tenant_id.eq.${userId},landlord_id.eq.${userId}`)
-        .order('created_at', { ascending: false });
+            listing_id,
+            tenant_id,
+            landlord_id,
+            status,
+            opened_by,
+            created_at,
+            listings (
+              id,
+              title,
+              price,
+              images,
+              address_exact
+            ),
+            tenant_profile:profiles!matches_tenant_id_fkey (
+              id,
+              name,
+              email,
+              phone
+            ),
+            landlord_profile:profiles!matches_landlord_id_fkey (
+              id,
+              name,
+              email,
+              phone
+            )
+          `)
+          .or(`tenant_id.eq.${userId},landlord_id.eq.${userId}`)
+          .order('created_at', { ascending: false });
 
-      if (matches && matches.length > 0) {
-        const map = new Map<string, any>();
-        localMatches.forEach(m => map.set(m.id, m));
-        matches.forEach((m: any) => {
-          map.set(m.id, {
-            id: m.id,
-            listing_id: m.listing_id,
-            tenant_id: m.tenant_id,
-            landlord_id: m.landlord_id,
-            status: m.status,
-            landlord_first_message_sent: false,
-            compatibility_score: 95,
-            created_at: m.created_at,
-            listing: m.listings ? {
-              id: m.listings.id,
-              title: m.listings.title,
-              rent: m.listings.price,
-              city: m.listings.address_exact?.split(',').pop()?.trim() || 'Málaga',
-              images: m.listings.images || [],
-            } : undefined,
-            tenant: m.tenant_profile ? {
-              id: m.tenant_profile.id,
-              name: m.tenant_profile.name,
-              avatar_url: null,
-              trust_score: 90,
-            } : undefined,
-            landlord: m.landlord_profile ? {
-              id: m.landlord_profile.id,
-              name: m.landlord_profile.name,
-              avatar_url: null,
-            } : undefined,
+        if (matches && matches.length > 0) {
+          const map = new Map<string, any>();
+          localMatches.forEach(m => map.set(m.id, m));
+          matches.forEach((m: any) => {
+            map.set(m.id, {
+              id: m.id,
+              listing_id: m.listing_id,
+              tenant_id: m.tenant_id,
+              landlord_id: m.landlord_id,
+              status: m.status,
+              landlord_first_message_sent: false,
+              compatibility_score: 95,
+              created_at: m.created_at,
+              listing: m.listings ? {
+                id: m.listings.id,
+                title: m.listings.title,
+                rent: m.listings.price,
+                city: m.listings.address_exact?.split(',').pop()?.trim() || 'Málaga',
+                images: m.listings.images || [],
+              } : undefined,
+              tenant: m.tenant_profile ? {
+                id: m.tenant_profile.id,
+                name: m.tenant_profile.name,
+                avatar_url: null,
+                trust_score: 90,
+              } : undefined,
+              landlord: m.landlord_profile ? {
+                id: m.landlord_profile.id,
+                name: m.landlord_profile.name,
+                avatar_url: null,
+              } : undefined,
+            });
           });
-        });
-        res.json(Array.from(map.values()));
-        return;
+          res.json(Array.from(map.values()));
+          return;
+        }
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/matches', error: err });
       }
-    } catch (err: any) {
-      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/matches', error: err });
     }
 
     res.json(Array.isArray(localMatches) ? localMatches : []);
@@ -1692,39 +1943,41 @@ matchingRouter.get('/messages/:matchId', async (req: Request, res: Response) => 
     const localMessages = RentiaDB.getChatMessages(matchId);
 
     // Intentar leer de Supabase si está disponible
-    try {
-      const supabase = getSupabase();
-      const { data: messages } = await supabase
-        .from('messages')
-        .select('id, match_id, sender_id, content, read_at, created_at')
-        .eq('match_id', matchId)
-        .order('created_at', { ascending: true });
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
+        const { data: messages } = await supabase
+          .from('messages')
+          .select('id, match_id, sender_id, content, read_at, created_at')
+          .eq('match_id', matchId)
+          .order('created_at', { ascending: true });
 
-      if (messages && messages.length > 0) {
-        const map = new Map<string, any>();
-        localMessages.forEach(m => map.set(m.id, m));
-        messages.forEach((msg: any) => {
-          map.set(msg.id, {
-            id: msg.id,
-            match_id: msg.match_id,
-            sender_id: msg.sender_id,
-            sender_role: 'user',
-            content: msg.content,
-            created_at: msg.created_at,
-            read_at: msg.read_at,
+        if (messages && messages.length > 0) {
+          const map = new Map<string, any>();
+          localMessages.forEach(m => map.set(m.id, m));
+          messages.forEach((msg: any) => {
+            map.set(msg.id, {
+              id: msg.id,
+              match_id: msg.match_id,
+              sender_id: msg.sender_id,
+              sender_role: 'user',
+              content: msg.content,
+              created_at: msg.created_at,
+              read_at: msg.read_at,
+            });
           });
-        });
-        res.json({
-          matchId,
-          landlord_first_message_sent: true,
-          isLandlord: true,
-          isTenant: false,
-          messages: Array.from(map.values()),
-        });
-        return;
+          res.json({
+            matchId,
+            landlord_first_message_sent: true,
+            isLandlord: true,
+            isTenant: false,
+            messages: Array.from(map.values()),
+          });
+          return;
+        }
+      } catch (err: any) {
+        console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/messages/:matchId', error: err });
       }
-    } catch (err: any) {
-      console.error('[SUPABASE_READ_FAILED]', { route: 'GET /api/matching/messages/:matchId', error: err });
     }
 
     res.json({
@@ -1766,24 +2019,26 @@ matchingRouter.post('/messages', async (req: Request, res: Response) => {
     });
 
     // Replicar en Supabase si está disponible
-    try {
-      const supabase = getSupabase();
-      await supabase
-        .from('messages')
-        .insert({
-          id: savedMessage.id,
-          match_id: matchId,
-          sender_id: senderId,
-          content: content.trim(),
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = getSupabase();
+        await supabase
+          .from('messages')
+          .insert({
+            id: savedMessage.id,
+            match_id: matchId,
+            sender_id: senderId,
+            content: content.trim(),
+          });
+      } catch (err: any) {
+        logSupabaseWriteFailure({
+          route: 'POST /api/matching/messages',
+          operation: 'insert',
+          target_table: 'messages',
+          payload: { id: savedMessage.id, match_id: matchId, sender_id: senderId },
+          error: err,
         });
-    } catch (err: any) {
-      logSupabaseWriteFailure({
-        route: 'POST /api/matching/messages',
-        operation: 'insert',
-        target_table: 'messages',
-        payload: { id: savedMessage.id, match_id: matchId, sender_id: senderId },
-        error: err,
-      });
+      }
     }
 
     res.json({

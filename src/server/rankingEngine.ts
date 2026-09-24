@@ -1,4 +1,4 @@
-import { getSupabase } from './supabase';
+import { getSupabase, isSupabaseConfigured } from './supabase';
 import { RentiaDB } from './db/database';
 
 export interface MatchScoreResult {
@@ -29,50 +29,76 @@ export async function calculateMatchRanking(
   listingId: string,
   tenantId: string
 ): Promise<MatchScoreResult> {
-  const supabase = getSupabase();
+  const supabase = isSupabaseConfigured() ? getSupabase() : null;
 
-  // 1. Appel de la fonction RPC Supabase (moteur PostgreSQL)
-  try {
-    const { data, error } = await supabase.rpc('calculate_match_score', {
-      p_listing_id: listingId,
-      p_tenant_id: tenantId,
-    });
+  // 1. Appel de la fonction RPC Supabase (moteur PostgreSQL) si disponible
+  if (supabase) {
+    try {
+      const { data, error } = await supabase.rpc('calculate_match_score', {
+        p_listing_id: listingId,
+        p_tenant_id: tenantId,
+      });
 
-    if (!error && data) {
-      return {
-        eligible: data.eligible ?? true,
-        matchScore: data.match_score ?? 0,
-        reason: data.reason,
-        breakdown: {
-          compatibility: data.breakdown?.compatibility ?? 0,
-          verification: data.breakdown?.verification ?? 0,
-          activity: data.breakdown?.activity ?? 0,
-          pointsBonus: data.breakdown?.points_bonus ?? 0,
-          totalRawPoints: data.breakdown?.total_raw_points ?? 0,
-        },
-      };
+      if (!error && data) {
+        return {
+          eligible: data.eligible ?? true,
+          matchScore: data.match_score ?? 0,
+          reason: data.reason,
+          breakdown: {
+            compatibility: data.breakdown?.compatibility ?? 0,
+            verification: data.breakdown?.verification ?? 0,
+            activity: data.breakdown?.activity ?? 0,
+            pointsBonus: data.breakdown?.points_bonus ?? 0,
+            totalRawPoints: data.breakdown?.total_raw_points ?? 0,
+          },
+        };
+      }
+    } catch (rpcErr) {
+      console.warn('RPC calculate_match_score non disponible, calcul via tables:', rpcErr);
     }
-  } catch (rpcErr) {
-    console.warn('RPC calculate_match_score non disponible, calcul via tables Supabase directes:', rpcErr);
   }
 
-  // 2. Calcul direct via les tables Supabase (listings, tenant_preferences, leases, rentia_points_events)
+  // 2. Calcul direct via les tables Supabase (ou fallback base de données persistante RentiaDB)
   try {
-    // Récupération de l'annonce depuis Supabase (avec fallback seeds)
-    const { data: rawListing } = await supabase
-      .from('listings')
-      .select('*')
-      .eq('id', listingId)
-      .maybeSingle();
+    let rawListing: any = null;
+    let prefs: any = null;
+    let verifiedCount = 1;
+    let totalPoints = 0;
+
+    if (supabase) {
+      // Récupération de l'annonce depuis Supabase
+      const listingRes = await supabase
+        .from('listings')
+        .select('*')
+        .eq('id', listingId)
+        .maybeSingle();
+      rawListing = listingRes.data;
+
+      // Récupération des préférences locataire depuis Supabase
+      const prefsRes = await supabase
+        .from('tenant_preferences')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+      prefs = prefsRes.data;
+
+      const { data: verifiedLeases } = await supabase
+        .from('leases')
+        .select('id')
+        .eq('user_id', tenantId)
+        .eq('status', 'verified');
+      if (verifiedLeases && verifiedLeases.length > 0) {
+        verifiedCount = verifiedLeases.length;
+      }
+
+      const { data: pointsEvents } = await supabase
+        .from('rentia_points_events')
+        .select('points_delta')
+        .eq('user_id', tenantId);
+      totalPoints = (pointsEvents || []).reduce((sum: number, ev: any) => sum + (ev.points_delta || 0), 0);
+    }
 
     const listing = rawListing || RentiaDB.getListingById(listingId);
-
-    // Récupération des préférences locataire depuis Supabase (avec fallback base de données persistante)
-    const { data: prefs } = await supabase
-      .from('tenant_preferences')
-      .select('*')
-      .eq('tenant_id', tenantId)
-      .maybeSingle();
 
     const dbTenant = RentiaDB.getTenantProfileById(tenantId);
 
@@ -121,19 +147,11 @@ export async function calculateMatchRanking(
     }
 
     // NIVEAU DE VÉRIFICATION DU PASSPORT (Max 20 points)
-    const { data: verifiedLeases } = await supabase
-      .from('leases')
-      .select('id')
-      .eq('user_id', tenantId)
-      .eq('status', 'verified');
-
-    const verifiedCount = (verifiedLeases?.length && verifiedLeases.length > 0) 
-      ? verifiedLeases.length 
-      : (dbTenant?.verified_docs_count || 1);
+    const count = (verifiedCount && verifiedCount > 0) ? verifiedCount : (dbTenant?.verified_docs_count || 1);
     let verificationScore = 5;
-    if (verifiedCount >= 2) {
+    if (count >= 2) {
       verificationScore = 20;
-    } else if (verifiedCount === 1) {
+    } else if (count === 1) {
       verificationScore = 12;
     }
 
@@ -141,12 +159,6 @@ export async function calculateMatchRanking(
     const activityScore = 5;
 
     // BONUS RENTIA POINTS (Strictement plafonné à MAX 5 points)
-    const { data: pointsEvents } = await supabase
-      .from('rentia_points_events')
-      .select('points_delta')
-      .eq('user_id', tenantId);
-
-    const totalPoints = (pointsEvents || []).reduce((sum, ev) => sum + (ev.points_delta || 0), 0);
     const pointsBonus = Math.min(5, Math.floor(totalPoints / 100));
 
     const finalScore = Math.min(100, Math.round(compatScore + verificationScore + activityScore + pointsBonus));
@@ -187,6 +199,10 @@ export async function recordRentiaPointsEvent(
   pointsDelta: number,
   metadata: Record<string, any> = {}
 ) {
+  if (!isSupabaseConfigured()) {
+    return { eventId: `local_point_${Date.now()}`, pointsDelta };
+  }
+
   const supabase = getSupabase();
   const oneHourAgo = new Date(Date.now() - 3600 * 1000).toISOString();
 

@@ -492,7 +492,7 @@ export const PublishListingView: React.FC<PublishListingViewProps> = ({
               </div>
             </div>
 
-            {/* Section 4: Verificación Oficial de Titularidad */}
+            {/* Section 4: Verificación Acreditada de Titularidad */}
             <div className="bg-indigo-50/70 p-4 rounded-2xl border border-indigo-200/80 space-y-2.5">
               <div className="flex items-center gap-2">
                 <ShieldCheck className="w-5 h-5 text-indigo-700" />

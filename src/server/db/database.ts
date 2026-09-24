@@ -1317,8 +1317,11 @@ export const RentiaDB = {
   // ==========================================
   // INMUEBLES & VIVIENDAS (LISTINGS)
   // ==========================================
-  getListings(filter?: { city?: string; activeOnly?: boolean; search?: string }): ListingRecord[] {
+  getListings(filter?: { city?: string; activeOnly?: boolean; search?: string; landlordId?: string }): ListingRecord[] {
     let list = databaseCache.listings;
+    if (filter?.landlordId) {
+      list = list.filter((l) => l.landlord_id === filter.landlordId);
+    }
     if (filter?.activeOnly) {
       list = list.filter((l) => l.is_active);
     }
@@ -1927,6 +1930,40 @@ export const RentiaDB = {
     return this.saveSwipe(swipeData);
   },
 
+  removeSwipe(actorId: string, listingId: string): boolean {
+    const beforeCount = databaseCache.swipes.length;
+    databaseCache.swipes = databaseCache.swipes.filter(
+      (s) => !(s.actor_id === actorId && (s.listing_id === listingId || s.target_id === listingId || s.target_user_id === listingId))
+    );
+    // Also remove any pending match associated with this swipe
+    databaseCache.matches = databaseCache.matches.filter(
+      (m) => !(m.tenant_id === actorId && m.listing_id === listingId && m.status === 'pending')
+    );
+    saveDatabase();
+    return databaseCache.swipes.length < beforeCount;
+  },
+
+  getSwipedListingIds(actorId: string): { liked: string[]; passed: string[]; all: string[] } {
+    const userSwipes = databaseCache.swipes.filter((s) => s.actor_id === actorId);
+    const liked: string[] = [];
+    const passed: string[] = [];
+    userSwipes.forEach((s) => {
+      const lid = s.listing_id || s.target_id || s.target_user_id;
+      if (lid) {
+        if (s.action === 'like') {
+          liked.push(lid);
+        } else {
+          passed.push(lid);
+        }
+      }
+    });
+    return {
+      liked: Array.from(new Set(liked)),
+      passed: Array.from(new Set(passed)),
+      all: Array.from(new Set([...liked, ...passed])),
+    };
+  },
+
   getMatches(filter?: string | { tenantId?: string; landlordId?: string }): MatchRecord[] {
     let list = databaseCache.matches;
     if (typeof filter === 'string') {
@@ -2114,6 +2151,142 @@ export const RentiaDB = {
       totalSessions: sessions.length,
       activeSessionsNow: sessions.filter((s) => s.is_active).length,
       totalTimeSpentMinutes: Math.round(totalTimeSpentSeconds / 60),
+    };
+  },
+
+  getRealAdminAnalytics() {
+    const users = databaseCache.users;
+    const listings = databaseCache.listings;
+    const tenantProfiles = databaseCache.tenant_profiles;
+    const matches = databaseCache.matches;
+    const leases = databaseCache.leases;
+    const verifs = databaseCache.ownership_verifications;
+    const logins = databaseCache.user_logins;
+    const sessions = databaseCache.user_sessions;
+    const swipes = databaseCache.swipes;
+
+    const tenants = users.filter((u) => u.role === 'tenant');
+    const landlords = users.filter((u) => u.role === 'landlord');
+    const admins = users.filter((u) => u.role === 'admin');
+    const activeUsers = users.filter((u) => u.is_active !== false);
+
+    // Trust Scores
+    const trustScores = users.map((u) => u.trust_score || 85);
+    const avgTrustScore = trustScores.length > 0 ? Math.round(trustScores.reduce((a, b) => a + b, 0) / trustScores.length) : 0;
+
+    // Listings breakdown
+    const activeListings = listings.filter((l) => l.is_active !== false && l.status !== 'rented');
+    const rentedListings = listings.filter((l) => l.status === 'rented');
+    const cityListingsCount: Record<string, number> = {};
+    const bedroomsCount: Record<string, number> = { '1': 0, '2': 0, '3': 0, '4+': 0 };
+    let sumRent = 0;
+    listings.forEach((l) => {
+      const city = l.city || 'Desconocida';
+      cityListingsCount[city] = (cityListingsCount[city] || 0) + 1;
+      const beds = Number(l.bedrooms) || 1;
+      if (beds <= 1) bedroomsCount['1'] = (bedroomsCount['1'] || 0) + 1;
+      else if (beds === 2) bedroomsCount['2'] = (bedroomsCount['2'] || 0) + 1;
+      else if (beds === 3) bedroomsCount['3'] = (bedroomsCount['3'] || 0) + 1;
+      else bedroomsCount['4+'] = (bedroomsCount['4+'] || 0) + 1;
+
+      if (l.rent) sumRent += Number(l.rent);
+    });
+    const avgRent = listings.length > 0 ? Math.round(sumRent / listings.length) : 0;
+
+    // Tenant profiles breakdown
+    let sumBudget = 0;
+    let sumIncome = 0;
+    let payslipsCount = 0;
+    tenantProfiles.forEach((tp) => {
+      if (tp.max_budget) sumBudget += Number(tp.max_budget);
+      if (tp.monthly_income) sumIncome += Number(tp.monthly_income);
+      if (tp.has_payslips) payslipsCount += 1;
+    });
+    const avgBudget = tenantProfiles.length > 0 ? Math.round(sumBudget / tenantProfiles.length) : 0;
+    const avgIncome = tenantProfiles.length > 0 ? Math.round(sumIncome / tenantProfiles.length) : 0;
+
+    // Leases
+    const verifiedLeases = leases.filter((l) => l.status === 'verified');
+    const pendingLeases = leases.filter((l) => l.status === 'pending');
+    let totalRentVolume = 0;
+    let totalDepositSecured = 0;
+    leases.forEach((l) => {
+      if (l.rent) totalRentVolume += Number(l.rent);
+      if (l.deposit) totalDepositSecured += Number(l.deposit);
+    });
+
+    // Swipes & Matches
+    const likesCount = swipes.filter((s) => s.action === 'like').length;
+    const passesCount = swipes.filter((s) => s.action === 'pass').length;
+    const activeMatches = matches.filter((m) => m.status === 'active');
+    const pendingMatches = matches.filter((m) => m.status === 'pending');
+
+    // Sessions & Traffic
+    const totalTimeSpentSeconds = sessions.reduce((acc, s) => acc + (s.duration_seconds || 0), 0);
+    const avgSessionSeconds = sessions.length > 0 ? Math.round(totalTimeSpentSeconds / sessions.length) : 0;
+    const successfulLogins = logins.filter((l) => l.status === 'success').length;
+    const failedLogins = logins.filter((l) => l.status === 'failed').length;
+    const devicesBreakdown: Record<string, number> = { Escritorio: 0, Móvil: 0, Tablet: 0 };
+    sessions.forEach((s) => {
+      const d = s.device_type || 'Escritorio';
+      devicesBreakdown[d] = (devicesBreakdown[d] || 0) + 1;
+    });
+
+    return {
+      users: {
+        total: users.length,
+        tenantsCount: tenants.length,
+        landlordsCount: landlords.length,
+        adminsCount: admins.length,
+        activeCount: activeUsers.length,
+        avgTrustScore,
+      },
+      tenants: {
+        totalProfiles: tenantProfiles.length,
+        avgBudget,
+        avgIncome,
+        payslipsCount,
+        payslipsPercentage: tenantProfiles.length > 0 ? Math.round((payslipsCount / tenantProfiles.length) * 100) : 0,
+      },
+      listings: {
+        total: listings.length,
+        activeCount: activeListings.length,
+        rentedCount: rentedListings.length,
+        avgRent,
+        cityDistribution: cityListingsCount,
+        bedroomsDistribution: bedroomsCount,
+      },
+      leases: {
+        total: leases.length,
+        verifiedCount: verifiedLeases.length,
+        pendingCount: pendingLeases.length,
+        totalRentVolume,
+        totalDepositSecured,
+      },
+      matches: {
+        totalSwipes: swipes.length,
+        likesCount,
+        passesCount,
+        totalMatches: matches.length,
+        activeMatches: activeMatches.length,
+        pendingMatches: pendingMatches.length,
+      },
+      traffic: {
+        totalLogins: logins.length,
+        successfulLogins,
+        failedLogins,
+        activeSessionsNow: sessions.filter((s) => s.is_active).length,
+        totalSessions: sessions.length,
+        totalTimeSpentMinutes: Math.round(totalTimeSpentSeconds / 60),
+        avgSessionSeconds,
+        devicesBreakdown,
+      },
+      verifications: {
+        totalOwnershipRequests: verifs.length,
+        pendingOwnerships: verifs.filter((v) => v.status === 'pending').length,
+        approvedOwnerships: verifs.filter((v) => v.status === 'verified').length,
+        rejectedOwnerships: verifs.filter((v) => v.status === 'rejected').length,
+      },
     };
   },
 

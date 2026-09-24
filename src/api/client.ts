@@ -1,39 +1,11 @@
 // Client-side API client connecting to Rentia backend + Supabase
 import { PaymentRecord, ExtractedContractData } from '../types';
-import { supabase } from '../lib/supabase';
+import { supabase, isClientSupabaseConfigured } from '../lib/supabase';
 
 const API_BASE = '/api';
 
 export async function getAuthToken(): Promise<string | null> {
-  try {
-    const { data } = await supabase.auth.getSession();
-    const session = data?.session;
-    if (session?.access_token) {
-      const nowSec = Math.floor(Date.now() / 1000);
-      // If token is expired or within 60 seconds of expiring, refresh session proactively
-      if (session.expires_at && session.expires_at <= nowSec + 60) {
-        try {
-          const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
-          if (!refreshErr && refreshed?.session?.access_token) {
-            setAuthToken(refreshed.session.access_token);
-            return refreshed.session.access_token;
-          }
-        } catch {
-          // Refresh attempt failed
-        }
-        // If expired and refresh failed, clear dead token
-        if (session.expires_at <= nowSec) {
-          setAuthToken(null);
-        }
-      } else {
-        return session.access_token;
-      }
-    }
-  } catch (err) {
-    // Ignore session get errors
-  }
-
-  // Fallback to localStorage token, validating that if it's a JWT or local token it isn't expired
+  // 1. Check localStorage token first (especially demo/local tokens)
   const storedToken = localStorage.getItem('rentia_jwt_token');
   if (storedToken) {
     if (storedToken.startsWith('rentia_local_')) {
@@ -44,11 +16,48 @@ export async function getAuthToken(): Promise<string | null> {
           localStorage.removeItem('rentia_jwt_token');
           return null;
         }
+        return storedToken;
       } catch {
         localStorage.removeItem('rentia_jwt_token');
         return null;
       }
-    } else if (storedToken.includes('.')) {
+    }
+  }
+
+  // 2. Only check Supabase session if Supabase is actually configured
+  if (isClientSupabaseConfigured()) {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const session = data?.session;
+      if (session?.access_token) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        // If token is expired or within 60 seconds of expiring, refresh session proactively
+        if (session.expires_at && session.expires_at <= nowSec + 60) {
+          try {
+            const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+            if (!refreshErr && refreshed?.session?.access_token) {
+              setAuthToken(refreshed.session.access_token);
+              return refreshed.session.access_token;
+            }
+          } catch {
+            // Refresh attempt failed
+          }
+          // If expired and refresh failed, clear dead token
+          if (session.expires_at <= nowSec) {
+            setAuthToken(null);
+          }
+        } else {
+          return session.access_token;
+        }
+      }
+    } catch {
+      // Ignore session get errors
+    }
+  }
+
+  // Fallback to non-expired stored JWT token
+  if (storedToken) {
+    if (storedToken.includes('.')) {
       try {
         const parts = storedToken.split('.');
         if (parts.length === 3) {
@@ -407,7 +416,24 @@ export const api = {
         body: JSON.stringify(payload),
       }),
 
-    getListings: (params?: { city?: string; lat?: number; lng?: number; radius?: number; status?: string; include_inactive?: boolean }) => {
+    getListings: (params?: { 
+      city?: string; 
+      lat?: number; 
+      lng?: number; 
+      radius?: number; 
+      status?: string; 
+      include_inactive?: boolean;
+      min_price?: number;
+      max_price?: number;
+      bedrooms?: number;
+      property_type?: string;
+      pets_allowed?: boolean;
+      is_furnished?: boolean;
+      elevator?: boolean;
+      actor_id?: string;
+      hide_interacted?: boolean;
+      unhearted_only?: boolean;
+    }) => {
       const searchParams = new URLSearchParams();
       if (params?.city && params.city !== 'all') searchParams.append('city', params.city);
       if (params?.lat !== undefined && params?.lat !== null) searchParams.append('lat', String(params.lat));
@@ -415,6 +441,16 @@ export const api = {
       if (params?.radius) searchParams.append('radius', String(params.radius));
       if (params?.status && params.status !== 'all') searchParams.append('status', params.status);
       if (params?.include_inactive) searchParams.append('include_inactive', 'true');
+      if (params?.min_price !== undefined) searchParams.append('min_price', String(params.min_price));
+      if (params?.max_price !== undefined) searchParams.append('max_price', String(params.max_price));
+      if (params?.bedrooms !== undefined) searchParams.append('bedrooms', String(params.bedrooms));
+      if (params?.property_type && params.property_type !== 'all') searchParams.append('property_type', params.property_type);
+      if (params?.pets_allowed) searchParams.append('pets_allowed', 'true');
+      if (params?.is_furnished) searchParams.append('is_furnished', 'true');
+      if (params?.elevator) searchParams.append('elevator', 'true');
+      if (params?.actor_id) searchParams.append('actor_id', params.actor_id);
+      if (params?.hide_interacted) searchParams.append('hide_interacted', 'true');
+      if (params?.unhearted_only) searchParams.append('unhearted_only', 'true');
       const qs = searchParams.toString();
       return request<any[]>(`/matching/listings${qs ? `?${qs}` : ''}`);
     },
@@ -499,6 +535,17 @@ export const api = {
     getMyLikes: () =>
       request<any[]>(`/matching/my-likes`),
 
+    getSwipedIds: (actorId?: string) => {
+      const q = actorId ? `?actorId=${encodeURIComponent(actorId)}` : '';
+      return request<{ liked: string[]; passed: string[]; all: string[] }>(`/matching/swiped-ids${q}`);
+    },
+
+    unlike: (listingId: string, actorId?: string) =>
+      request<{ success: boolean; removed: boolean; listingId: string }>(`/matching/unlike`, {
+        method: 'POST',
+        body: JSON.stringify({ listingId, actorId }),
+      }),
+
     getLandlordLikes: (params?: { landlordId?: string }) => {
       const q = params?.landlordId ? `?landlordId=${encodeURIComponent(params.landlordId)}` : '';
       return request<any[]>(`/matching/landlord/likes${q}`);
@@ -523,6 +570,64 @@ export const api = {
         pendingOwnerships: number;
         pendingReports: number;
       }>(`/admin/stats`),
+
+    getDetailedRealAnalytics: () =>
+      request<{
+        users: {
+          total: number;
+          tenantsCount: number;
+          landlordsCount: number;
+          adminsCount: number;
+          activeCount: number;
+          avgTrustScore: number;
+        };
+        tenants: {
+          totalProfiles: number;
+          avgBudget: number;
+          avgIncome: number;
+          payslipsCount: number;
+          payslipsPercentage: number;
+        };
+        listings: {
+          total: number;
+          activeCount: number;
+          rentedCount: number;
+          avgRent: number;
+          cityDistribution: Record<string, number>;
+          bedroomsDistribution: Record<string, number>;
+        };
+        leases: {
+          total: number;
+          verifiedCount: number;
+          pendingCount: number;
+          totalRentVolume: number;
+          totalDepositSecured: number;
+        };
+        matches: {
+          totalSwipes: number;
+          likesCount: number;
+          passesCount: number;
+          totalMatches: number;
+          activeMatches: number;
+          pendingMatches: number;
+        };
+        traffic: {
+          totalLogins: number;
+          successfulLogins: number;
+          failedLogins: number;
+          activeSessionsNow: number;
+          totalSessions: number;
+          totalTimeSpentMinutes: number;
+          avgSessionSeconds: number;
+          devicesBreakdown: Record<string, number>;
+        };
+        verifications: {
+          totalOwnershipRequests: number;
+          pendingOwnerships: number;
+          approvedOwnerships: number;
+          rejectedOwnerships: number;
+        };
+      }>(`/admin/detailed-real-analytics`),
 
     getOwnershipVerifications: async (status = 'pending') => {
       try {

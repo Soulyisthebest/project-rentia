@@ -589,7 +589,7 @@ export const SEED_TENANTS: SeedTenant[] = [
     has_guarantor: false,
     occupants_count: 1,
     desired_move_in_date: '2026-04-01',
-    bio: 'Trabajo vinculado a la Reserva de Doñana. Tengo un perro educado con adiestramiento oficial. Excelente relación con antiguos caseros.',
+    bio: 'Trabajo vinculado a la Reserva de Doñana. Tengo un perro educado con adiestramiento certificado. Excelente relación con antiguos caseros.',
     photos: [
       'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=600&auto=format&fit=crop&q=80',
       'https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?w=600&auto=format&fit=crop&q=80',

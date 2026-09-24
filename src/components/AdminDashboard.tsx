@@ -50,8 +50,19 @@ import { AdminListingsManager } from './admin/AdminListingsManager';
 import { AdminBlockedEmails } from './admin/AdminBlockedEmails';
 import { AdminUserProfileModal } from './admin/AdminUserProfileModal';
 import { AdminReportsAndKyc } from './admin/AdminReportsAndKyc';
+import { SwipeDiscovery } from './SwipeDiscovery';
+import { MyLikesView } from './MyLikesView';
+import { UnifiedPassportAndCertificate } from './UnifiedPassportAndCertificate';
+import { MatchesListView } from './MatchesListView';
+import { LandlordDashboard } from './LandlordDashboard';
+import { PublishListingView } from './PublishListingView';
+import { LandlordSwipeDiscovery } from './LandlordSwipeDiscovery';
+import { LandlordLikesView } from './LandlordLikesView';
+import { TenantProfile, RentalLease } from '../types';
 import { SEED_LISTINGS } from '../data/seedListings';
 import { SEED_TENANTS } from '../data/seedTenants';
+
+export type AdminSection = 'dashboards' | 'view_as_tenant' | 'view_as_landlord';
 
 export type AdminTab = 
   | 'kpis_center'
@@ -84,8 +95,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   currentUser,
   onUserChange,
 }) => {
+  const [adminSection, setAdminSection] = useState<AdminSection>('dashboards');
+  const [tenantSubView, setTenantSubView] = useState<'explore' | 'likes' | 'passport' | 'chat'>('explore');
+  const [landlordSubView, setLandlordSubView] = useState<'dashboard' | 'publish' | 'candidates' | 'likes' | 'chat'>('dashboard');
+
   const [activeTab, setActiveTab] = useState<AdminTab>('kpis_center');
   const [stats, setStats] = useState<any>(null);
+  const [realAnalytics, setRealAnalytics] = useState<any>(null);
   const [verifications, setVerifications] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [logins, setLogins] = useState<any[]>([]);
@@ -192,13 +208,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const [statsData, verifsData, usersData, loginsData, sessionsData, summaryData] = await Promise.all([
+      const [statsData, verifsData, usersData, loginsData, sessionsData, summaryData, realAnalyticsData] = await Promise.all([
         api.admin.getStats().catch(() => null),
         api.admin.getOwnershipVerifications('pending').catch(() => []),
         api.admin.getUsers().catch(() => []),
         api.admin.getLogins({ limit: 150 }).catch(() => []),
         api.admin.getSessions({ limit: 150 }).catch(() => []),
         api.admin.getSessionsSummary().catch(() => null),
+        api.admin.getDetailedRealAnalytics().catch(() => null),
       ]);
 
       const toSafeArray = (val: any, fallbackProp?: string) => {
@@ -209,6 +226,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       };
 
       setStats(statsData);
+      setRealAnalytics(realAnalyticsData);
       setVerifications(toSafeArray(verifsData, 'verifications'));
       setUsers(toSafeArray(usersData, 'users'));
       setLogins(toSafeArray(loginsData, 'logins'));

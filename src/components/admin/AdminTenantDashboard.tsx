@@ -316,7 +316,7 @@ export const AdminTenantDashboard: React.FC<AdminTenantDashboardProps> = ({
 
             <div className="bg-indigo-50/70 p-3 rounded-2xl border border-indigo-200 text-indigo-950 text-xs flex items-center justify-between">
               <div>
-                <span className="font-bold">Certificado Oficial PDF:</span>
+                <span className="font-bold">Certificado del Inquilino PDF:</span>
                 <div className="text-[11px] text-indigo-700 mt-0.5">Hash SHA-256 verificado en Supabase Cloud.</div>
               </div>
               <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-indigo-200 text-indigo-900">

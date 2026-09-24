@@ -232,7 +232,7 @@ export const Header: React.FC<HeaderProps> = ({
                 <span>{t.navMessages}</span>
               </button>
 
-              {/* Tab 5: Pasaporte y Certificado Oficial Unificado (Juntos en una sola vista) */}
+              {/* Tab 5: Pasaporte y Certificado del Inquilino Unificado (Juntos en una sola vista) */}
               <button
                 onClick={() => navigateView('tenant_passport')}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
@@ -241,7 +241,7 @@ export const Header: React.FC<HeaderProps> = ({
                     : 'text-stone-600 hover:text-[#1E1B4B] hover:bg-stone-50'
                 }`}
                 id="nav-tab-passport-certificate"
-                title="Pasaporte digital y certificado oficial unificado"
+                title="Pasaporte digital y certificado del inquilino verificado"
               >
                 <FileCheck2 className="w-3.5 h-3.5 text-amber-400" />
                 <span>Pasaporte y Certificado</span>
